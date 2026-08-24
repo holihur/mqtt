@@ -1,4 +1,5 @@
 //go:build linux
+//nolint:all
 
 package uring
 
