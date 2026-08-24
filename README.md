@@ -1,4 +1,5 @@
 # MQTT Broker — Go + Redis Cluster
+[![CI](https://github.com/kingfisher-vvv/mqtt/actions/workflows/ci.yml/badge.svg)](https://github.com/kingfisher-vvv/mqtt/actions/workflows/ci.yml)
 
 支持 **MQTT 3.1 (0x03) / 3.1.1 (0x04) / 5.0 (0x05)** 的分布式 Broker，单机可跑，多实例通过 Redis 水平扩展。
 
@@ -77,9 +78,10 @@ internal/auth     Auth/ACL 插件
 ## 配置
 
 ```
-- -tcp  :1883            TCP 监听
-- -ws   :8083            WS 监听 (空则禁用)
-- -redis 127.0.0.1:6379  Redis 地址 (空则纯内存)
+- -tcp   :1883            TCP 监听
+- -ws    :8083            WS 监听 (空则禁用)
+- -redis 127.0.0.1:6379  Redis 地址 (逗号分隔多地址即集群, 空则纯内存)
+- -pprof :6060            pprof 监听 (空则禁用)
 - -node  <id>            节点 ID
 ```
 

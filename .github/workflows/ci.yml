@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: make build
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.8.0
+
+      - name: Test (race)
+        run: go test -race -count=1 -run Test -v ./... 2>&1 | tail -n 100
+
+      - name: Test cluster
+        run: go test -race -count=1 -run TestCluster -v ./internal/broker
+
+      - name: Bench smoke
+        run: go test -run=^$ -bench=. ./... -benchmem -benchtime=1x 2>&1 | head -n 40
+
+      - name: Install mosquitto clients
+        run: sudo apt-get update && sudo apt-get install -y mosquitto-clients
+
+      - name: Verify broker starts (memory)
+        run: |
+          ./bin/broker -tcp :11883 -ws :18083 -redis "" -pprof :0 &
+          pid=$!
+          sleep 2
+          mosquitto_pub -h 127.0.0.1 -p 11883 -t ci/test -m hello -d
+          mosquitto_sub -h 127.0.0.1 -p 11883 -t ci/# -C 1 -W 2 &
+          sleep 0.5
+          mosquitto_pub -h 127.0.0.1 -p 11883 -t ci/hello -m world
+          wait
+          kill $pid || true
+          wait $pid || true
+
+      - name: Verify broker starts (redis)
+        run: |
+          ./bin/broker -tcp :11883 -ws :18083 -redis 127.0.0.1:6379 -pprof :0 &
+          pid=$!
+          sleep 2
+          mosquitto_pub -h 127.0.0.1 -p 11883 -t ci/redis -m hello -d
+          kill $pid || true
+          wait $pid || true
