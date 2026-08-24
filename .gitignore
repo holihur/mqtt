@@ -1,0 +1,6 @@
+bin/
+.omo/
+.codegraph
+.DS_Store
+*.log
+tmp/

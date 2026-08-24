@@ -1,0 +1,25 @@
+version: "3.8"
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+  broker1:
+    build: .
+    ports:
+      - "1883:1883"
+      - "8083:8083"
+    command: ["./bin/broker", "-tcp", ":1883", "-ws", ":8083", "-redis", "redis:6379", "-node", "broker1"]
+    depends_on: [redis]
+  broker2:
+    build: .
+    ports:
+      - "1884:1883"
+      - "8084:8083"
+    command: ["./bin/broker", "-tcp", ":1883", "-ws", ":8083", "-redis", "redis:6379", "-node", "broker2"]
+    depends_on: [redis]
+volumes:
+  redis_data:

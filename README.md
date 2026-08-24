@@ -1,0 +1,91 @@
+# MQTT Broker — Go + Redis Cluster
+
+支持 **MQTT 3.1 (0x03) / 3.1.1 (0x04) / 5.0 (0x05)** 的分布式 Broker，单机可跑，多实例通过 Redis 水平扩展。
+
+## 架构
+
+```
+[TCP:1883] [WS:8083] ─┐
+                      ├─ transport.Listener ── Connection (Parser + CodecRouter)
+[Redis] ◄─────────────┘                            │
+                                     Broker (Session/Trie/QoS/Retain/Will)
+                                         │  ▲
+                                    Redis Store + Cluster PubSub (mqtt:cluster)
+```
+
+- **编解码**: 手写 VarInt + Properties，v3/v5 分流，剩余长度 0-256MB 校验
+- **路由**: 本地 Trie 匹配（`+`/`#`，`$SYS` 隔离）+ Redis 广播到集群其他节点
+- **会话**: `CleanSession/CleanStart + SessionExpiryInterval` 统一模型，`0=断开即删, 0xFFFFFFFF=永不过期`，落 Redis 可跨节点接管
+- **QoS**: 0 直通、1 PUBACK 重传、2 四步握手 + 幂等去重，`ReceiveMaximum` 背压
+- **Retain/Will**: Retain 存 Redis，Will 支持 `DelayInterval`
+- **集群**: Redis PubSub `mqtt:cluster` + 心跳 `mqtt:nodes:<id>` TTL 15s
+
+## 快速开始
+
+```bash
+# 依赖 Redis
+redis-server &
+
+# 单机内存版
+make run-memory
+
+# 单机 Redis 版
+make run
+
+# 多实例集群（手动）
+./bin/broker -tcp :1883 -ws :8083 -redis 127.0.0.1:6379 -node n1
+./bin/broker -tcp :1884 -ws :8084 -redis 127.0.0.1:6379 -node n2
+
+# Docker 集群
+docker compose up --build
+```
+
+## 测试
+
+```bash
+go test ./... -race -count=1 -v
+```
+
+使用任意 MQTT 客户端验证双版本：
+
+```bash
+# v3.1.1
+mosquitto_pub -h 127.0.0.1 -p 1883 -t "test/hello" -m "hi" -q 1
+mosquitto_sub -h 127.0.0.1 -p 1883 -t "test/#" -v
+
+# v5 (mosquitto 2.x)
+mosquitto_pub -h 127.0.0.1 -p 1883 -t "test/v5" -m "v5 hi" -q 1 --property user-property k v
+```
+
+WebSocket: `ws://localhost:8083/mqtt`
+
+## 目录
+
+```
+cmd/broker        入口
+internal/parser   流式拆包 (Remaining Length)
+internal/codec    14 报文 + Properties 编解码
+internal/topic    Trie 通配符匹配
+internal/session  会话/Inflight/TopicAlias
+internal/persistence  Store 接口 (Memory/Redis)
+internal/cluster  Redis PubSub 路由与节点发现
+internal/transport  TCP/WS 统一 Conn
+internal/broker   核心路由与生命周期
+internal/auth     Auth/ACL 插件
+```
+
+## 配置
+
+```
+- -tcp  :1883            TCP 监听
+- -ws   :8083            WS 监听 (空则禁用)
+- -redis 127.0.0.1:6379  Redis 地址 (空则纯内存)
+- -node  <id>            节点 ID
+```
+
+## 已验证
+
+- `mosquitto_pub/sub` v3.1.1 互通，QoS0/1/2
+- `mqtt.js` v5 CONNECT/PUBLISH/SUBSCRIBE/UserProperty/TopicAlias
+- 双实例集群：A 节点 publish，B 节点 subscriber 收到
+- `go vet` / `go test -race`  0 告警
