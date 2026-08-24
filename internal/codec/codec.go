@@ -396,7 +396,16 @@ func decodePublish(p *Packet, b []byte) error {
 	if pos < len(b) {
 		saved := pos
 		props, np, err := decodeProperties(b, pos)
-		if err == nil && np <= len(b) {
+		if err != nil {
+			if err == ErrTooManyUserProperties || err == ErrUnknownProperty {
+				return err
+			}
+			// For v3 PUBLISH with no properties, remaining bytes are payload (e.g., "hello" looks like varint 104)
+			p.PubProps = nil
+			p.Payload = b[pos:]
+			return nil
+		}
+		if np <= len(b) {
 			propsLen := np - saved - 1
 			if propsLen > 0 {
 				_ = saved
@@ -406,9 +415,6 @@ func decodePublish(p *Packet, b []byte) error {
 				p.PubProps = nil
 			}
 		} else {
-			p.PubProps = nil
-		}
-		if err != nil {
 			p.PubProps = nil
 		}
 		p.Payload = b[pos:]

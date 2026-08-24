@@ -34,7 +34,7 @@ dev: build
 	@echo "   http://localhost:6060/metrics  (prometheus)"
 	@echo "   http://localhost:9090  (prometheus, if compose up)"
 	@echo "   press Ctrl+C to stop"
-	./$(BIN) -tcp :1883 -ws :8083 -redis 127.0.0.1:6379 -pprof :6060 -node dev
+	./$(BIN) -tcp :1883 -ws :8083 -redis 127.0.0.1:6379 -pprof :6060 -node dev -allow-anonymous true -allow-anonymous true
 
 dev-down:
 	@echo "== dev: stopping redis =="

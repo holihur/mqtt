@@ -35,13 +35,14 @@ func splitAddrs(s string) []string {
 
 func main() {
 	var (
-		tcpAddr   = flag.String("tcp", ":1883", "TCP listen addr")
-		wsAddr    = flag.String("ws", ":8083", "WebSocket listen addr (empty to disable)")
-		redisAddr = flag.String("redis", "127.0.0.1:6379", "Redis addr (comma-separated for cluster, empty to disable)")
-		pprofAddr = flag.String("pprof", ":6060", "pprof listen addr (empty to disable)")
-		aclFile   = flag.String("acl", "", "ACL file path (empty to disable)")
-		jwtSecret = flag.String("jwt-secret", "", "JWT HMAC secret (empty to disable)")
-		nodeID    = flag.String("node", "", "Node ID (auto if empty)")
+		tcpAddr        = flag.String("tcp", ":1883", "TCP listen addr")
+		wsAddr         = flag.String("ws", ":8083", "WebSocket listen addr (empty to disable)")
+		redisAddr      = flag.String("redis", "127.0.0.1:6379", "Redis addr (comma-separated for cluster, empty to disable)")
+		pprofAddr      = flag.String("pprof", "", "pprof listen addr (empty to disable, e.g. :6060)")
+		aclFile        = flag.String("acl", "", "ACL file path (empty to disable)")
+		jwtSecret      = flag.String("jwt-secret", "", "JWT HMAC secret (empty to disable)")
+		allowAnonymous = flag.String("allow-anonymous", "false", "allow anonymous (true/false)")
+		nodeID         = flag.String("node", "", "Node ID (auto if empty)")
 	)
 	flag.Parse()
 
@@ -69,14 +70,16 @@ func main() {
 		defer func() { _ = redisCli.Close() }()
 	}
 
+	allowAnon := *allowAnonymous == "true"
 	cfg := broker.Config{
-		NodeID:    *nodeID,
-		TCPAddr:   *tcpAddr,
-		WSAddr:    *wsAddr,
-		RedisAddr: *redisAddr,
-		PprofAddr: *pprofAddr,
-		ACLFile:   *aclFile,
-		JWTSecret: *jwtSecret,
+		NodeID:         *nodeID,
+		TCPAddr:        *tcpAddr,
+		WSAddr:         *wsAddr,
+		RedisAddr:      *redisAddr,
+		PprofAddr:      *pprofAddr,
+		ACLFile:        *aclFile,
+		JWTSecret:      *jwtSecret,
+		AllowAnonymous: allowAnon,
 	}
 	b := broker.New(cfg, store, nil)
 

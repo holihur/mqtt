@@ -187,13 +187,22 @@ func decodeProperties(src []byte, pos int) (*Properties, int, error) {
 			i++
 			p.RetainAvailable = &v
 		case PropUserProperty:
+			if len(p.User) >= 10 {
+				return nil, pos, ErrTooManyUserProperties
+			}
 			k, np, err := decodeString(src, i)
 			if err != nil {
 				return nil, pos, err
 			}
+			if len(k) > 256 || len(k) == 0 {
+				return nil, pos, ErrMalformedPacket
+			}
 			v, np2, err := decodeString(src, np)
 			if err != nil {
 				return nil, pos, err
+			}
+			if len(v) > 1024 {
+				return nil, pos, ErrMalformedPacket
 			}
 			i = np2
 			p.User = append(p.User, UserProperty{Key: k, Val: v})
@@ -226,12 +235,7 @@ func decodeProperties(src []byte, pos int) (*Properties, int, error) {
 			i++
 			p.SharedSubAvailable = &v
 		default:
-			// Unknown property: need to skip based on type. Since we don't know, try to skip 1 byte? Spec says unknown must be skipped by length, but we don't know size.
-			// For forward compatibility, we cannot reliably skip. Best: treat as error for known length var? But spec says ignore unknown.
-			// Heuristic: try to skip as VarInt length field then bytes? Not reliable.
-			// We will skip 1 byte and continue (best effort). Actually spec requires we know property type by ID; unknown IDs should be ignored by skipping its data based on its type - but we can't.
-			// For simplicity, return error for truly unknown id > 0x2A and not in spec: skip 1 byte to avoid infinite loop.
-			i++ // skip one
+			return nil, pos, ErrUnknownProperty
 		}
 	}
 	return p, end, nil

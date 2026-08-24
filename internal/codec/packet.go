@@ -36,10 +36,12 @@ const (
 )
 
 var (
-	ErrMalformedPacket     = errors.New("malformed packet")
-	ErrUnsupportedProtocol = errors.New("unsupported protocol version")
-	ErrInvalidQoS          = errors.New("invalid QoS")
-	ErrProtocolViolation   = errors.New("protocol violation")
+	ErrMalformedPacket       = errors.New("malformed packet")
+	ErrTooManyUserProperties = errors.New("too many user properties")
+	ErrUnknownProperty       = errors.New("unknown property")
+	ErrUnsupportedProtocol   = errors.New("unsupported protocol version")
+	ErrInvalidQoS            = errors.New("invalid QoS")
+	ErrProtocolViolation     = errors.New("protocol violation")
 )
 
 // Connect flags

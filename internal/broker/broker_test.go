@@ -13,7 +13,7 @@ import (
 func startTestBroker(t *testing.T, tcpAddr string) *Broker {
 	t.Helper()
 	store := persistence.NewMemoryStore()
-	cfg := Config{NodeID: "test-node", TCPAddr: tcpAddr, WSAddr: "", RedisAddr: ""}
+	cfg := Config{NodeID: "test-node", TCPAddr: tcpAddr, WSAddr: "", RedisAddr: "", AllowAnonymous: true}
 	b := New(cfg, store, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() { cancel(); time.Sleep(100 * time.Millisecond) })
@@ -142,8 +142,8 @@ func TestClusterViaRedis(t *testing.T) {
 	conn.Close()
 	store := persistence.NewMemoryStore()
 	// two brokers sharing redis
-	cfg1 := Config{NodeID: "n1", TCPAddr: "127.0.0.1:18883", RedisAddr: "127.0.0.1:6379"}
-	cfg2 := Config{NodeID: "n2", TCPAddr: "127.0.0.1:18884", RedisAddr: "127.0.0.1:6379"}
+	cfg1 := Config{NodeID: "n1", TCPAddr: "127.0.0.1:18883", RedisAddr: "127.0.0.1:6379", AllowAnonymous: true}
+	cfg2 := Config{NodeID: "n2", TCPAddr: "127.0.0.1:18884", RedisAddr: "127.0.0.1:6379", AllowAnonymous: true}
 	b1 := New(cfg1, store, nil)
 	b2 := New(cfg2, store, nil)
 	ctx, cancel := context.WithCancel(context.Background())

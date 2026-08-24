@@ -13,7 +13,7 @@ import (
 
 func TestQoS1RetryAndDedup(t *testing.T) {
 	store := persistence.NewMemoryStore()
-	cfg := Config{NodeID: "qos-test", TCPAddr: "127.0.0.1:11887", RedisAddr: ""}
+	cfg := Config{NodeID: "qos-test", TCPAddr: "127.0.0.1:11887", RedisAddr: "", AllowAnonymous: true}
 	b := New(cfg, store, nil)
 	ctx, cancel := newCtx()
 	defer cancel()
@@ -65,7 +65,7 @@ func TestQoS1RetryAndDedup(t *testing.T) {
 
 func TestOfflineQueue(t *testing.T) {
 	store := persistence.NewMemoryStore()
-	cfg := Config{NodeID: "offline-test", TCPAddr: "127.0.0.1:11888", RedisAddr: ""}
+	cfg := Config{NodeID: "offline-test", TCPAddr: "127.0.0.1:11888", RedisAddr: "", AllowAnonymous: true}
 	b := New(cfg, store, nil)
 	ctx, cancel := newCtx()
 	defer cancel()

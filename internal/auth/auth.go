@@ -19,6 +19,11 @@ type AllowAll struct{}
 func (a *AllowAll) Authenticate(_, _ string, _ []byte) bool { return true }
 func (a *AllowAll) Authorize(_, _ string, _ bool) bool      { return true }
 
+type DenyAll struct{}
+
+func (d *DenyAll) Authenticate(_, _ string, _ []byte) bool { return false }
+func (d *DenyAll) Authorize(_, _ string, _ bool) bool      { return false }
+
 type SimpleAuth struct {
 	Users map[string]string   // username -> password
 	ACL   map[string][]string // clientID -> allowed topic prefixes

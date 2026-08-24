@@ -107,12 +107,10 @@ func (c *Cluster) Publish(ctx context.Context, topic string, payload []byte, qos
 }
 
 func (c *Cluster) Nodes(ctx context.Context) ([]string, error) {
-	keys, err := c.cli.Keys(ctx, c.prefix+":nodes:*").Result()
-	if err != nil {
-		return nil, err
-	}
 	var out []string
-	for _, k := range keys {
+	iter := c.cli.Scan(ctx, 0, c.prefix+":nodes:*", 0).Iterator()
+	for iter.Next(ctx) {
+		k := iter.Val()
 		// k = prefix:nodes:nodeID
 		// extract nodeID
 		p := c.prefix + ":nodes:"

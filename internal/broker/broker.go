@@ -17,6 +17,7 @@ import (
 	"mqtt/internal/transport"
 	"net/http"
 	_ "net/http/pprof"
+	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -91,7 +92,11 @@ func New(cfg Config, store persistence.Store, authenticator auth.Authenticator) 
 			}
 		}
 		if len(chain) == 0 {
-			authenticator = &auth.AllowAll{}
+			if cfg.AllowAnonymous {
+				authenticator = &auth.AllowAll{}
+			} else {
+				authenticator = &auth.DenyAll{}
+			}
 		} else if len(chain) == 1 {
 			authenticator = chain[0]
 		} else {
@@ -256,14 +261,22 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 	b.mu.Unlock()
 	_ = b.store.SaveSession(context.Background(), sess)
 
-	// Will
+	// Will with validation and delay cap
 	if pkt.Will != nil {
-		sess.Will = &session.Will{
-			Topic:         pkt.Will.Topic,
-			Payload:       pkt.Will.Payload,
-			QoS:           pkt.Will.QoS,
-			Retain:        pkt.Will.Retain,
-			DelayInterval: pkt.Will.DelayInterval,
+		if pkt.Will.Topic == "" || strings.HasPrefix(pkt.Will.Topic, "$SYS/") {
+			// invalid will topic
+		} else {
+			delay := pkt.Will.DelayInterval
+			if delay > 86400 {
+				delay = 86400
+			}
+			sess.Will = &session.Will{
+				Topic:         pkt.Will.Topic,
+				Payload:       pkt.Will.Payload,
+				QoS:           pkt.Will.QoS,
+				Retain:        pkt.Will.Retain,
+				DelayInterval: delay,
+			}
 		}
 	}
 
@@ -401,8 +414,12 @@ func (b *Broker) readLoop(conn *transport.Conn, sess *session.Session) {
 				// For outbound QoS2, ack is PUBREC -> PUBREL -> PUBCOMP
 			}
 		case codec.TypePUBREL:
-			// inbound QoS2 complete
-			sess.RemoveInflight(pkt.PacketID)
+			if e, ok := sess.GetInflight(pkt.PacketID); ok {
+				b.routeMessage(e.Topic, e.Payload, 2, false, nil, sess.ClientID)
+				sess.RemoveInflight(pkt.PacketID)
+			} else {
+				sess.RemoveInflight(pkt.PacketID)
+			}
 			comp := &codec.Packet{Type: codec.TypePUBCOMP, Version: conn.Version(), PacketID: pkt.PacketID}
 			_ = conn.WritePacket(comp)
 		case codec.TypePUBCOMP:
@@ -420,6 +437,14 @@ func (b *Broker) readLoop(conn *transport.Conn, sess *session.Session) {
 }
 
 func (b *Broker) handlePublish(conn *transport.Conn, sess *session.Session, pkt *codec.Packet) {
+	// $SYS prefix reserved for broker only
+	if strings.HasPrefix(pkt.Topic, "$SYS/") && sess.ClientID != "sys" {
+		if pkt.QoS == 1 {
+			ack := &codec.Packet{Type: codec.TypePUBACK, Version: sess.Version, PacketID: pkt.PacketID, Reason: 0x87}
+			_ = conn.WritePacket(ack)
+		}
+		return
+	}
 	// ACL check
 	if !b.auth.Authorize(sess.ClientID, pkt.Topic, true) {
 		if sess.Version == codec.ProtocolV5 {
@@ -430,10 +455,25 @@ func (b *Broker) handlePublish(conn *transport.Conn, sess *session.Session, pkt 
 		}
 		return
 	}
-	// topic alias handling (v5)
+	// topic alias handling (v5) with limit
 	topicName := pkt.Topic
 	if sess.Version == codec.ProtocolV5 && pkt.PubProps != nil && pkt.PubProps.TopicAlias != nil {
 		alias := *pkt.PubProps.TopicAlias
+		if alias == 0 || alias > sess.TopicAliasMaximum {
+			if pkt.QoS == 1 {
+				ack := &codec.Packet{Type: codec.TypePUBACK, Version: sess.Version, PacketID: pkt.PacketID, Reason: 0x94}
+				_ = conn.WritePacket(ack)
+			}
+			_ = conn.Close()
+			return
+		}
+		if len(sess.AliasToTopic) >= int(sess.TopicAliasMaximum) && sess.AliasToTopic[alias] == "" {
+			if pkt.QoS == 1 {
+				ack := &codec.Packet{Type: codec.TypePUBACK, Version: sess.Version, PacketID: pkt.PacketID, Reason: 0x94}
+				_ = conn.WritePacket(ack)
+			}
+			return
+		}
 		if topicName != "" {
 			sess.AliasToTopic[alias] = topicName
 			sess.TopicToAlias[topicName] = alias
@@ -454,11 +494,19 @@ func (b *Broker) handlePublish(conn *transport.Conn, sess *session.Session, pkt 
 	if topicName == "" {
 		return
 	}
-	// QoS2 inbound: need to send PUBREC and store
+	if len(topicName) > 4096 || len(pkt.Payload) > 1<<20 {
+		return
+	}
+	if sess.MaximumPacketSize > 0 && len(topicName)+len(pkt.Payload)+10 > int(sess.MaximumPacketSize) {
+		_ = conn.Close()
+		return
+	}
+	if !topic.IsValidTopic(topicName) {
+		return
+	}
+	// QoS2 inbound: need to send PUBREC and store, route after PUBREL
 	if pkt.QoS == 2 {
-		// dedup by packetID
 		if _, exists := sess.GetInflight(pkt.PacketID); exists {
-			// duplicate
 			rec := &codec.Packet{Type: codec.TypePUBREC, Version: conn.Version(), PacketID: pkt.PacketID}
 			_ = conn.WritePacket(rec)
 			return
@@ -466,8 +514,7 @@ func (b *Broker) handlePublish(conn *transport.Conn, sess *session.Session, pkt 
 		sess.AddInflight(&session.InflightEntry{PacketID: pkt.PacketID, QoS: 2, Topic: topicName, Payload: pkt.Payload, State: "qos2-publish"})
 		rec := &codec.Packet{Type: codec.TypePUBREC, Version: conn.Version(), PacketID: pkt.PacketID}
 		_ = conn.WritePacket(rec)
-		// wait for PUBREL before routing (spec: should route after PUBREL)
-		// For simplicity, route now (at-most-once side effect is same if we dedup)
+		return
 	}
 
 	// Retain handling
@@ -777,6 +824,12 @@ func (b *Broker) handleWill(sess *session.Session) {
 	}
 	w := sess.Will
 	sess.Will = nil
+	if !b.auth.Authorize(sess.ClientID, w.Topic, true) {
+		return
+	}
+	if w.DelayInterval > 86400 {
+		w.DelayInterval = 86400
+	}
 	// delay
 	if w.DelayInterval > 0 {
 		time.AfterFunc(time.Duration(w.DelayInterval)*time.Second, func() {

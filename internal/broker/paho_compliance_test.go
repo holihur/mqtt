@@ -294,7 +294,7 @@ func TestPahoV5UserProperty(t *testing.T) {
 
 func newTestBroker(t *testing.T, addr string) *Broker {
 	t.Helper()
-	b := New(Config{NodeID: "paho-" + addr, TCPAddr: addr, RedisAddr: ""}, nil, nil)
+	b := New(Config{NodeID: "paho-" + addr, TCPAddr: addr, RedisAddr: "", AllowAnonymous: true}, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() { cancel(); time.Sleep(100 * time.Millisecond) })
 	go func() { _ = b.Start(ctx) }()

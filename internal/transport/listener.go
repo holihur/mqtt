@@ -55,7 +55,7 @@ func (l *Listener) Listen(ctx context.Context, handle func(net.Conn)) error {
 }
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin: func(r *http.Request) bool { return r.Header.Get("Origin") == "" },
 }
 
 func (l *Listener) serveWS(ctx context.Context, handle func(net.Conn)) {

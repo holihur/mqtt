@@ -102,12 +102,10 @@ func (r *RedisStore) DeleteRetained(ctx context.Context, topic string) error {
 	return r.cli.Del(ctx, r.key("retain", topic)).Err()
 }
 func (r *RedisStore) ListRetained(ctx context.Context) ([]*Message, error) {
-	keys, err := r.cli.Keys(ctx, r.key("retain", "*")).Result()
-	if err != nil {
-		return nil, err
-	}
 	var out []*Message
-	for _, k := range keys {
+	iter := r.cli.Scan(ctx, 0, r.key("retain", "*"), 0).Iterator()
+	for iter.Next(ctx) {
+		k := iter.Val()
 		data, err := r.cli.Get(ctx, k).Bytes()
 		if err != nil {
 			continue

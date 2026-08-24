@@ -13,7 +13,7 @@ import (
 
 func Benchmark10kClients(b *testing.B) {
 	store := persistence.NewMemoryStore()
-	cfg := broker.Config{NodeID: "bench", TCPAddr: "127.0.0.1:11885", WSAddr: "", RedisAddr: ""}
+	cfg := broker.Config{NodeID: "bench", TCPAddr: "127.0.0.1:11885", WSAddr: "", RedisAddr: "", AllowAnonymous: true}
 	br := broker.New(cfg, store, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -35,7 +35,7 @@ func Benchmark10kClients(b *testing.B) {
 
 func BenchmarkPublishThroughput(b *testing.B) {
 	store := persistence.NewMemoryStore()
-	cfg := broker.Config{NodeID: "bench-pub", TCPAddr: "127.0.0.1:11886", RedisAddr: ""}
+	cfg := broker.Config{NodeID: "bench-pub", TCPAddr: "127.0.0.1:11886", RedisAddr: "", AllowAnonymous: true}
 	br := broker.New(cfg, store, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -12,7 +12,7 @@ import (
 
 func TestWillDelay(t *testing.T) {
 	store := persistence.NewMemoryStore()
-	cfg := Config{NodeID: "will-test", TCPAddr: "127.0.0.1:11889", RedisAddr: ""}
+	cfg := Config{NodeID: "will-test", TCPAddr: "127.0.0.1:11889", RedisAddr: "", AllowAnonymous: true}
 	b := New(cfg, store, nil)
 	ctx, cancel := newCtx()
 	defer cancel()
@@ -60,7 +60,7 @@ func TestWillDelay(t *testing.T) {
 
 func TestSysMetrics(t *testing.T) {
 	store := persistence.NewMemoryStore()
-	cfg := Config{NodeID: "sys-test", TCPAddr: "127.0.0.1:11890", RedisAddr: ""}
+	cfg := Config{NodeID: "sys-test", TCPAddr: "127.0.0.1:11890", RedisAddr: "", AllowAnonymous: true}
 	b := New(cfg, store, nil)
 	ctx, cancel := newCtx()
 	defer cancel()
@@ -124,7 +124,7 @@ func TestSysMetrics(t *testing.T) {
 
 func TestReceiveMaximumEnforced(t *testing.T) {
 	store := persistence.NewMemoryStore()
-	cfg := Config{NodeID: "rm-test", TCPAddr: "127.0.0.1:11891", RedisAddr: ""}
+	cfg := Config{NodeID: "rm-test", TCPAddr: "127.0.0.1:11891", RedisAddr: "", AllowAnonymous: true}
 	b := New(cfg, store, nil)
 	ctx, cancel := newCtx()
 	defer cancel()
