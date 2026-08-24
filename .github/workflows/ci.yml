@@ -10,6 +10,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -71,6 +74,56 @@ jobs:
         run: |
           go test -bench=. -benchtime=1x -benchmem ./bench 2>&1 | tee bench.txt
           cat bench.txt
+
+      - name: Update README bench
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          set -e
+          DATE=$(date -u +"%Y-%m-%d %H:%M UTC")
+          GOOS=$(grep -m1 "^goos:" bench.txt || echo "goos: linux")
+          GOARCH=$(grep -m1 "^goarch:" bench.txt || echo "goarch: amd64")
+          CPU=$(grep -m1 "^cpu:" bench.txt || echo "cpu: unknown")
+          BENCH10K=$(grep "Benchmark10kClients" bench.txt | head -n1 | xargs || echo "Benchmark10kClients n/a")
+          BENCHPUB=$(grep "BenchmarkPublishThroughput" bench.txt | head -n1 | xargs || echo "BenchmarkPublishThroughput n/a")
+          cat > /tmp/bench_block.md <<EOF
+          > 更新: $DATE | $GOOS $GOARCH | $CPU
+          >
+          > \`\`\`
+          > $(cat bench.txt | grep -E "^(goos|goarch|cpu|Benchmark)" | head -n 20)
+          > \`\`\`
+          >
+          > - $BENCH10K
+          > - $BENCHPUB
+          > - 详见 [\`docs/bench.md\`](docs/bench.md) 与 Artifacts \`bench.txt\`/\`c10k.txt\`
+          EOF
+          cat /tmp/bench_block.md
+          python3 << 'PY'
+          import re, pathlib
+          p = pathlib.Path("README.md")
+          s = p.read_text(encoding="utf-8")
+          block = pathlib.Path("/tmp/bench_block.md").read_text(encoding="utf-8")
+          new = re.sub(r"<!-- BENCH_START -->.*?<!-- BENCH_END -->", f"<!-- BENCH_START -->\n{block}\n<!-- BENCH_END -->", s, flags=re.S)
+          if new != s:
+              p.write_text(new, encoding="utf-8")
+              print("README.md updated")
+          else:
+              print("README.md unchanged")
+          PY
+          # also sync docs/bench.md header if exists
+          if [ -f docs/bench.md ]; then
+            echo -e "\n# Bench $(date -u +%Y-%m-%d)\n\n\`\`\`\n$(cat bench.txt)\n\`\`\`" >> /tmp/docs_bench_append || true
+          fi
+          if git diff --quiet README.md; then
+            echo "no README changes to push"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "docs: auto-update bench $DATE [skip ci]" || exit 0
+          git push || echo "push failed (maybe protected branch)"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install mosquitto clients
         run: sudo apt-get update && sudo apt-get install -y mosquitto-clients

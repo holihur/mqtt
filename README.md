@@ -97,5 +97,10 @@ internal/auth     Auth/ACL 插件
 
 - **Auth**：`AllowAll` / `SimpleAuth` / `JWT (HS256)` / `FileACL`（`--jwt-secret/--acl`），支持 `Chain`
 - **Fuzz**：`FuzzDecode`/`FuzzSplitFrame` 10w exec/s
-- **基准**：`docs/bench.md`（10k `CONNECT 0.48ms` / `PUBLISH 12µs`），`pprof + /metrics` 已暴露
+- **基准**：`docs/bench.md`（CI 自动更新，见下方），`pprof + /metrics` 已暴露
 - **一键开发**：`task dev` 自动拉起 `redis` + `broker`（`:1883/:8083/:6060`）
+
+## 基准与压测（CI 自动更新）
+<!-- BENCH_START -->
+> 首次推送后由 GitHub Actions 自动填充 `task bench` 与 `c10k` 结果
+<!-- BENCH_END -->
