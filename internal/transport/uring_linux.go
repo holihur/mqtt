@@ -54,9 +54,11 @@ func (u *UringListener) Listen(ctx context.Context, handle func(net.Conn)) error
 	}
 	for {
 		ch := make(chan iouring.Result, 1)
-		fd, _ := tcpLn.File()
-		_ = fd
-		_, err := u.iour.SubmitRequest(iouring.Accept(int(tcpLn.File().Fd())), ch)
+		f, _ := tcpLn.File()
+		_, err := u.iour.SubmitRequest(iouring.Accept(int(f.Fd())), ch)
+		if f != nil {
+			_ = f.Close()
+		}
 		_ = err
 		select {
 		case <-ctx.Done():
