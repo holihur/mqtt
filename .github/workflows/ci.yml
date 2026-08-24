@@ -67,7 +67,7 @@ jobs:
 
       - name: Verify broker starts (memory)
         run: |
-          ./bin/broker -tcp :11883 -ws :18083 -redis "" -pprof :0 &
+          ./bin/broker -tcp :11883 -ws :18083 -redis "" -pprof :0 -allow-anonymous true &
           pid=$!
           sleep 2
           mosquitto_pub -h 127.0.0.1 -p 11883 -t ci/test -m hello -d
@@ -80,7 +80,7 @@ jobs:
 
       - name: Verify broker starts (redis)
         run: |
-          ./bin/broker -tcp :11883 -ws :18083 -redis 127.0.0.1:6379 -pprof :0 &
+          ./bin/broker -tcp :11883 -ws :18083 -redis 127.0.0.1:6379 -pprof :0 -allow-anonymous true &
           pid=$!
           sleep 2
           mosquitto_pub -h 127.0.0.1 -p 11883 -t ci/redis -m hello -d
