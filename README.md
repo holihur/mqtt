@@ -102,5 +102,19 @@ internal/auth     Auth/ACL 插件
 
 ## 基准与压测（CI 自动更新）
 <!-- BENCH_START -->
-> 首次推送后由 GitHub Actions 自动填充 `task bench` 与 `c10k` 结果
+> 更新: 2026-08-24 08:30 UTC | goos: darwin goarch: amd64 | cpu: Intel(R) Core(TM) i3-8100B CPU @ 3.60GHz
+>
+> ```
+> goos: darwin
+> goarch: amd64
+> cpu: Intel(R) Core(TM) i3-8100B CPU @ 3.60GHz
+> Benchmark10kClients-4    6819  180896 ns/op  15385 B/op  47 allocs/op
+> BenchmarkPublishThroughput-4  305781  4945 ns/op  520 B/op  7 allocs/op
+> ```
+>
+> - Benchmark10kClients-4 6819 180896 ns/op 15385 B/op 47 allocs/op
+> - BenchmarkPublishThroughput-4 305781 4945 ns/op 520 B/op 7 allocs/op
+> - c10k-quick 1000/1000 ok 221ms heap 15MB goroutines 1005 (task c10k-quick, 本机)
+> - c10k 10k/60s 由 GitHub Actions `c10k` Job 产出 `c10k.txt`（见 Actions Artifacts）
+> - 详见 [`docs/bench.md`](docs/bench.md) 与 Artifacts `bench.txt`/`c10k.txt`
 <!-- BENCH_END -->
