@@ -18,8 +18,19 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+)
+
+var (
+	mqttMessagesReceived = promauto.NewCounter(prometheus.CounterOpts{Name: "mqtt_messages_received_total", Help: "Total MQTT messages received"})
+	mqttMessagesSent     = promauto.NewCounter(prometheus.CounterOpts{Name: "mqtt_messages_sent_total", Help: "Total MQTT messages sent"})
+	mqttClientsConnected = promauto.NewGauge(prometheus.GaugeOpts{Name: "mqtt_clients_connected", Help: "Current connected clients"})
+	mqttInflight         = promauto.NewGauge(prometheus.GaugeOpts{Name: "mqtt_inflight_messages", Help: "Current inflight messages"})
 )
 
 type Config struct {
@@ -41,13 +52,16 @@ type BrokerStats struct {
 }
 
 type Broker struct {
-	cfg      Config
-	store    persistence.Store
-	trie     *topic.Trie
-	auth     auth.Authenticator
-	nodeID   string
-	cluster  *cluster.Cluster
-	redisCli redis.UniversalClient
+	cfg        Config
+	store      persistence.Store
+	trie       *topic.Trie
+	sharedMu   sync.Mutex
+	sharedSubs map[string]map[string][]string // group -> filter -> []clientID
+	sharedIdx  map[string]int                 // group -> next index for round-robin
+	auth       auth.Authenticator
+	nodeID     string
+	cluster    *cluster.Cluster
+	redisCli   redis.UniversalClient
 
 	mu       sync.RWMutex
 	conns    map[string]*transport.Conn // clientID -> conn
@@ -69,13 +83,15 @@ func New(cfg Config, store persistence.Store, authenticator auth.Authenticator) 
 		cfg.MaxPacketSize = 1 << 20 // 1MB
 	}
 	b := &Broker{
-		cfg:      cfg,
-		store:    store,
-		trie:     topic.NewTrie(),
-		auth:     authenticator,
-		nodeID:   cfg.NodeID,
-		conns:    make(map[string]*transport.Conn),
-		sessions: make(map[string]*session.Session),
+		cfg:        cfg,
+		store:      store,
+		trie:       topic.NewTrie(),
+		sharedSubs: make(map[string]map[string][]string),
+		sharedIdx:  make(map[string]int),
+		auth:       authenticator,
+		nodeID:     cfg.NodeID,
+		conns:      make(map[string]*transport.Conn),
+		sessions:   make(map[string]*session.Session),
 	}
 	// setup redis cluster if addr provided
 	if cfg.RedisAddr != "" {
@@ -98,6 +114,7 @@ func New(cfg Config, store persistence.Store, authenticator auth.Authenticator) 
 func (b *Broker) Start(ctx context.Context) error {
 	b.stats.StartedAt = time.Now()
 	if b.cfg.PprofAddr != "" {
+		http.Handle("/metrics", promhttp.Handler())
 		go func() { _ = http.ListenAndServe(b.cfg.PprofAddr, nil) }()
 		log.Printf("pprof listening %s", b.cfg.PprofAddr)
 	}
@@ -246,6 +263,8 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 		}
 		rm := uint16(65535)
 		props.ReceiveMaximum = &rm
+		ssa := byte(1)
+		props.SharedSubAvailable = &ssa
 		mps := uint32(b.cfg.MaxPacketSize)
 		props.MaximumPacketSize = &mps
 		ta := uint16(100)
@@ -460,6 +479,7 @@ func (b *Broker) routeMessage(topicName string, payload []byte, qos byte, retain
 	b.statsMu.Lock()
 	b.stats.MessagesReceived++
 	b.statsMu.Unlock()
+	mqttMessagesReceived.Inc()
 	if b.cfg.MaxPacketSize > 0 && len(payload)+len(topicName) > b.cfg.MaxPacketSize {
 		return
 	}
@@ -470,6 +490,58 @@ func (b *Broker) routeMessage(topicName string, payload []byte, qos byte, retain
 }
 
 func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props *codec.Properties, from string) {
+	// SharedSub handling: deliver one per group round-robin
+	b.sharedMu.Lock()
+	for group, filters := range b.sharedSubs {
+		for filter, clients := range filters {
+			if len(clients) == 0 {
+				continue
+			}
+			if !matchFilter(topicName, filter) {
+				continue
+			}
+			idx := b.sharedIdx[group] % len(clients)
+			b.sharedIdx[group] = (idx + 1) % len(clients)
+			chosen := clients[idx]
+			if chosen == from {
+				continue
+			}
+			b.mu.RLock()
+			conn, ok1 := b.conns[chosen]
+			sess, ok2 := b.sessions[chosen]
+			b.mu.RUnlock()
+			if !ok1 || !ok2 {
+				if sess != nil && sess.ExpiryInterval != 0 {
+					_ = b.store.EnqueueOffline(context.Background(), chosen, &persistence.Message{Topic: topicName, Payload: payload, QoS: qos})
+				}
+				continue
+			}
+			q := qos
+			if storedQoS, ok := sess.Subscriptions["$share/"+group+"/"+filter]; ok && storedQoS < q {
+				q = storedQoS
+			}
+			pub := &codec.Packet{Type: codec.TypePUBLISH, Version: conn.Version(), Topic: topicName, QoS: q, Payload: payload}
+			if q > 0 {
+				if !sess.CanSend() {
+					_ = b.store.EnqueueOffline(context.Background(), chosen, &persistence.Message{Topic: topicName, Payload: payload, QoS: qos})
+					continue
+				}
+				pub.PacketID = sess.NextPacketID()
+				if pub.PacketID == 0 {
+					continue
+				}
+				sess.AddInflight(&session.InflightEntry{PacketID: pub.PacketID, QoS: q, Topic: topicName, Payload: payload})
+				b.scheduleRetry(chosen, pub.PacketID)
+			}
+			if sess.Version == codec.ProtocolV5 && props != nil && len(props.SubscriptionID) > 0 {
+				pub.PubProps = &codec.Properties{SubscriptionID: props.SubscriptionID}
+			}
+			mqttMessagesSent.Inc()
+			mqttInflight.Set(float64(sess.InflightCount()))
+			_ = conn.WritePacket(pub)
+		}
+	}
+	b.sharedMu.Unlock()
 	subs := b.trie.Match(topicName)
 	for _, sub := range subs {
 		if sub.ClientID == from && sub.NoLocal {
@@ -516,6 +588,8 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 		if sess.Version == codec.ProtocolV5 && props != nil && len(props.SubscriptionID) > 0 {
 			pub.PubProps = &codec.Properties{SubscriptionID: props.SubscriptionID}
 		}
+		mqttMessagesSent.Inc()
+		mqttInflight.Set(float64(len(sess.Inflight) + 1))
 		if err := conn.WritePacket(pub); err != nil {
 			log.Printf("deliver to %s failed: %v", sub.ClientID, err)
 		}
@@ -537,11 +611,37 @@ func (b *Broker) handleSubscribe(conn *transport.Conn, sess *session.Session, pk
 			}
 			continue
 		}
-		// add to trie and session
-		b.trie.Add(sub.Filter, sess.ClientID, sub.QoS, sub.NoLocal)
-		sess.Subscriptions[sub.Filter] = sub.QoS
-		_ = b.store.SaveSession(context.Background(), sess)
-		codes = append(codes, sub.QoS)
+		if isShared, group, realFilter := isSharedFilter(sub.Filter); isShared {
+			if !topic.IsValidFilter(realFilter) {
+				codes = append(codes, 0x80)
+				continue
+			}
+			b.sharedMu.Lock()
+			if b.sharedSubs[group] == nil {
+				b.sharedSubs[group] = make(map[string][]string)
+			}
+			// avoid duplicate
+			found := false
+			for _, cid := range b.sharedSubs[group][realFilter] {
+				if cid == sess.ClientID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				b.sharedSubs[group][realFilter] = append(b.sharedSubs[group][realFilter], sess.ClientID)
+			}
+			b.sharedMu.Unlock()
+			sess.Subscriptions[sub.Filter] = sub.QoS
+			_ = b.store.SaveSession(context.Background(), sess)
+			codes = append(codes, sub.QoS)
+		} else {
+			// add to trie and session
+			b.trie.Add(sub.Filter, sess.ClientID, sub.QoS, sub.NoLocal)
+			sess.Subscriptions[sub.Filter] = sub.QoS
+			_ = b.store.SaveSession(context.Background(), sess)
+			codes = append(codes, sub.QoS)
+		}
 
 		// deliver retained messages matching this filter
 		retained, _ := b.store.ListRetained(context.Background())
@@ -583,7 +683,31 @@ func (b *Broker) handleSubscribe(conn *transport.Conn, sess *session.Session, pk
 
 func (b *Broker) handleUnsubscribe(conn *transport.Conn, sess *session.Session, pkt *codec.Packet) {
 	for _, t := range pkt.Topics {
-		b.trie.Remove(t, sess.ClientID)
+		if isShared, group, realFilter := isSharedFilter(t); isShared {
+			b.sharedMu.Lock()
+			if m, ok := b.sharedSubs[group]; ok {
+				list := m[realFilter]
+				newList := list[:0]
+				for _, cid := range list {
+					if cid != sess.ClientID {
+						newList = append(newList, cid)
+					}
+				}
+				if len(newList) == 0 {
+					delete(m, realFilter)
+					if len(m) == 0 {
+						delete(b.sharedSubs, group)
+					} else {
+						m[realFilter] = newList
+					}
+				} else {
+					m[realFilter] = newList
+				}
+			}
+			b.sharedMu.Unlock()
+		} else {
+			b.trie.Remove(t, sess.ClientID)
+		}
 		delete(sess.Subscriptions, t)
 	}
 	_ = b.store.SaveSession(context.Background(), sess)
@@ -689,6 +813,29 @@ func (b *Broker) scheduleRetry(clientID string, packetID uint16) {
 
 func (b *Broker) onClusterMessage(msg *cluster.ClusterMessage) {
 	b.deliverLocal(msg.Topic, msg.Payload, msg.QoS, nil, msg.From)
+}
+
+func isSharedFilter(filter string) (bool, string, string) {
+	if len(filter) > 7 && filter[:7] == "$share/" {
+		rest := filter[7:]
+		slash := -1
+		for i, c := range rest {
+			if c == '/' {
+				slash = i
+				break
+			}
+		}
+		if slash < 0 {
+			return false, "", ""
+		}
+		group := rest[:slash]
+		realFilter := rest[slash+1:]
+		if group == "" || realFilter == "" {
+			return false, "", ""
+		}
+		return true, group, realFilter
+	}
+	return false, "", ""
 }
 
 func matchFilter(t, filter string) bool {

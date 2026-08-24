@@ -7,19 +7,28 @@ services:
     command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    depends_on: [broker1]
   broker1:
     build: .
     ports:
       - "1883:1883"
       - "8083:8083"
-    command: ["./bin/broker", "-tcp", ":1883", "-ws", ":8083", "-redis", "redis:6379", "-node", "broker1"]
+      - "6060:6060"
+    command: ["./bin/broker", "-tcp", ":1883", "-ws", ":8083", "-redis", "redis:6379", "-node", "broker1", "-pprof", ":6060"]
     depends_on: [redis]
   broker2:
     build: .
     ports:
       - "1884:1883"
       - "8084:8083"
-    command: ["./bin/broker", "-tcp", ":1883", "-ws", ":8083", "-redis", "redis:6379", "-node", "broker2"]
+      - "6061:6060"
+    command: ["./bin/broker", "-tcp", ":1883", "-ws", ":8083", "-redis", "redis:6379", "-node", "broker2", "-pprof", ":6060"]
     depends_on: [redis]
 volumes:
   redis_data:

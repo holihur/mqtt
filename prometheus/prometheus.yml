@@ -1,0 +1,6 @@
+global:
+  scrape_interval: 5s
+scrape_configs:
+  - job_name: 'mqtt-broker'
+    static_configs:
+      - targets: ['broker1:6060','broker2:6060']
