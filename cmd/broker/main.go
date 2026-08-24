@@ -86,13 +86,19 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// signal handling
 	go func() {
 		ch := make(chan os.Signal, 1)
 		signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 		<-ch
 		log.Println("shutting down...")
 		cancel()
+		sig2 := make(chan os.Signal, 1)
+		signal.Notify(sig2, syscall.SIGINT, syscall.SIGTERM)
+		go func() {
+			<-sig2
+			log.Println("force exit")
+			os.Exit(1)
+		}()
 	}()
 
 	if err := b.Start(ctx); err != nil {
