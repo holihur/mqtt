@@ -45,8 +45,8 @@ type uringConn struct {
 	fd int
 }
 
-func (c *uringConn) Read(b []byte) (int, error)  { return 0, nil }
-func (c *uringConn) Write(b []byte) (int, error) { return len(b), nil }
+func (c *uringConn) Read(b []byte) (int, error)         { return 0, nil }
+func (c *uringConn) Write(b []byte) (int, error)        { return len(b), nil }
 func (c *uringConn) Close() error                       { return nil }
 func (c *uringConn) LocalAddr() net.Addr                { return &fakeAddr{"uring"} }
 func (c *uringConn) RemoteAddr() net.Addr               { return &fakeAddr{"uring-remote"} }
