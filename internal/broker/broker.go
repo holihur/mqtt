@@ -39,6 +39,8 @@ type Config struct {
 	WSAddr         string
 	RedisAddr      string
 	PprofAddr      string
+	ACLFile        string
+	JWTSecret      string
 	MaxPacketSize  int
 	AllowAnonymous bool
 }
@@ -77,7 +79,24 @@ func New(cfg Config, store persistence.Store, authenticator auth.Authenticator) 
 		cfg.NodeID = uuid.NewString()[:8]
 	}
 	if authenticator == nil {
-		authenticator = &auth.AllowAll{}
+		var chain []auth.Authenticator
+		if cfg.JWTSecret != "" {
+			chain = append(chain, &auth.JWTAuth{Secret: cfg.JWTSecret})
+		}
+		if cfg.ACLFile != "" {
+			if acl, err := auth.NewFileACL(cfg.ACLFile); err == nil {
+				chain = append(chain, acl)
+			} else {
+				log.Printf("acl file load failed %s: %v", cfg.ACLFile, err)
+			}
+		}
+		if len(chain) == 0 {
+			authenticator = &auth.AllowAll{}
+		} else if len(chain) == 1 {
+			authenticator = chain[0]
+		} else {
+			authenticator = &auth.Chain{Auths: chain}
+		}
 	}
 	if cfg.MaxPacketSize == 0 {
 		cfg.MaxPacketSize = 1 << 20 // 1MB

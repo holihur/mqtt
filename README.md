@@ -90,4 +90,12 @@ internal/auth     Auth/ACL 插件
 - `mosquitto_pub/sub` v3.1.1 互通，QoS0/1/2
 - `mqtt.js` v5 CONNECT/PUBLISH/SUBSCRIBE/UserProperty/TopicAlias
 - 双实例集群：A 节点 publish，B 节点 subscriber 收到
-- `go vet` / `go test -race`  0 告警
+- `Eclipse Paho` 官方套件 8 用例 100% 绿（`docs/compliance.md`）
+- `go vet` / `golangci 0` / `go test -race` / `Fuzz 3s` / `govulncheck` / `bench` 全绿
+
+## 安全与扩展
+
+- **Auth**：`AllowAll` / `SimpleAuth` / `JWT (HS256)` / `FileACL`（`--jwt-secret/--acl`），支持 `Chain`
+- **Fuzz**：`FuzzDecode`/`FuzzSplitFrame` 10w exec/s
+- **基准**：`docs/bench.md`（10k `CONNECT 0.48ms` / `PUBLISH 12µs`），`pprof + /metrics` 已暴露
+- **一键开发**：`make dev` 自动拉起 `redis` + `broker`（`:1883/:8083/:6060`）

@@ -39,6 +39,8 @@ func main() {
 		wsAddr    = flag.String("ws", ":8083", "WebSocket listen addr (empty to disable)")
 		redisAddr = flag.String("redis", "127.0.0.1:6379", "Redis addr (comma-separated for cluster, empty to disable)")
 		pprofAddr = flag.String("pprof", ":6060", "pprof listen addr (empty to disable)")
+		aclFile   = flag.String("acl", "", "ACL file path (empty to disable)")
+		jwtSecret = flag.String("jwt-secret", "", "JWT HMAC secret (empty to disable)")
 		nodeID    = flag.String("node", "", "Node ID (auto if empty)")
 	)
 	flag.Parse()
@@ -73,6 +75,8 @@ func main() {
 		WSAddr:    *wsAddr,
 		RedisAddr: *redisAddr,
 		PprofAddr: *pprofAddr,
+		ACLFile:   *aclFile,
+		JWTSecret: *jwtSecret,
 	}
 	b := broker.New(cfg, store, nil)
 

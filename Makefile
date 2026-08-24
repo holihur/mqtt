@@ -1,4 +1,4 @@
-.PHONY: build lint test bench run clean dev dev-down dev-logs
+.PHONY: build lint test bench fuzz run clean dev dev-down dev-logs
 
 BIN=bin/broker
 GO=go
@@ -45,6 +45,11 @@ dev-logs:
 
 bench:
 	$(GO) test -run=^$$ -bench=. ./... -benchmem
+
+# fuzz 仅在 GitHub CI 跑，本地不自动执行
+fuzz:
+	$(GO) test -run=^$$ -fuzz=FuzzDecode -fuzztime=3s ./internal/codec
+	$(GO) test -run=^$$ -fuzz=FuzzSplitFrame -fuzztime=3s ./internal/parser
 
 clean:
 	rm -rf bin

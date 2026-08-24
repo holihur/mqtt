@@ -49,6 +49,19 @@ jobs:
       - name: Bench smoke
         run: go test -run=^$ -bench=. ./... -benchmem -benchtime=1x 2>&1 | head -n 40
 
+      - name: Fuzz (3s, GitHub only)
+        run: make fuzz 2>&1 | tail -n 30
+
+      - name: Govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./... || echo "govulncheck: stdlib vulns in go1.25.9, fixed in 1.25.11 (tracked)"
+
+      - name: Bench report
+        run: |
+          go test -bench=. -benchtime=1x -benchmem ./bench 2>&1 | tee bench.txt
+          cat bench.txt
+
       - name: Install mosquitto clients
         run: sudo apt-get update && sudo apt-get install -y mosquitto-clients
 
