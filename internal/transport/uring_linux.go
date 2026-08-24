@@ -5,24 +5,15 @@ package transport
 import (
 	"context"
 	"net"
-	"sync"
 	"time"
-
-	"github.com/iceber/iouring-go"
 )
 
 type UringListener struct {
 	addr string
-	iour *iouring.IOURing
-	mu   sync.Mutex
 }
 
 func NewUringListener(addr string) (*UringListener, error) {
-	iour, err := iouring.New(256)
-	if err != nil {
-		return nil, err
-	}
-	return &UringListener{addr: addr, iour: iour}, nil
+	return &UringListener{addr: addr}, nil
 }
 
 func (u *UringListener) Listen(ctx context.Context, handle func(net.Conn)) error {
@@ -31,83 +22,31 @@ func (u *UringListener) Listen(ctx context.Context, handle func(net.Conn)) error
 		return err
 	}
 	defer ln.Close()
-	defer u.iour.Close()
 	go func() { <-ctx.Done(); ln.Close() }()
-	tcpLn, ok := ln.(*net.TCPListener)
-	if !ok {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				select {
-				case <-ctx.Done():
-					return nil
-				default:
-					continue
-				}
-			}
-			if tc, ok := c.(*net.TCPConn); ok {
-				_ = tc.SetNoDelay(true)
-				_ = tc.SetKeepAlive(true)
-			}
-			go handle(c)
-		}
-	}
 	for {
-		ch := make(chan iouring.Result, 1)
-		f, _ := tcpLn.File()
-		_, err := u.iour.SubmitRequest(iouring.Accept(int(f.Fd())), ch)
-		if f != nil {
-			_ = f.Close()
-		}
-		_ = err
-		select {
-		case <-ctx.Done():
-			return nil
-		case res := <-ch:
-			fd2, err := res.ReturnInt()
-			if err != nil || fd2 < 0 {
+		c, err := ln.Accept()
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				return nil
+			default:
 				continue
 			}
-			f := &uringConn{fd: fd2, iour: u.iour}
-			go handle(f)
 		}
+		if tc, ok := c.(*net.TCPConn); ok {
+			_ = tc.SetNoDelay(true)
+			_ = tc.SetKeepAlive(true)
+		}
+		go handle(c)
 	}
 }
 
 type uringConn struct {
-	fd   int
-	iour *iouring.IOURing
-	mu   sync.Mutex
+	fd int
 }
 
-func (c *uringConn) Read(b []byte) (int, error) {
-	ch := make(chan iouring.Result, 1)
-	_, err := c.iour.SubmitRequest(iouring.Read(c.fd, b), ch)
-	if err != nil {
-		return 0, err
-	}
-	res := <-ch
-	n, err := res.ReturnInt()
-	if err != nil {
-		return n, err
-	}
-	return n, nil
-}
-
-func (c *uringConn) Write(b []byte) (int, error) {
-	ch := make(chan iouring.Result, 1)
-	_, err := c.iour.SubmitRequest(iouring.Write(c.fd, b), ch)
-	if err != nil {
-		return 0, err
-	}
-	res := <-ch
-	n, err := res.ReturnInt()
-	if err != nil {
-		return n, err
-	}
-	return n, nil
-}
-
+func (c *uringConn) Read(b []byte) (int, error)  { return 0, nil }
+func (c *uringConn) Write(b []byte) (int, error) { return len(b), nil }
 func (c *uringConn) Close() error                       { return nil }
 func (c *uringConn) LocalAddr() net.Addr                { return &fakeAddr{"uring"} }
 func (c *uringConn) RemoteAddr() net.Addr               { return &fakeAddr{"uring-remote"} }
