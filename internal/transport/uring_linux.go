@@ -6,6 +6,7 @@ import (
 	"context"
 	"net"
 	"sync"
+	"time"
 
 	"mqtt/internal/transport/uring"
 )
@@ -80,7 +81,7 @@ func (u *UringListener) Listen(ctx context.Context, handle func(net.Conn)) error
 		if err != nil {
 			continue
 		}
-		if cqe.Res < 0 {
+		if cqe.Result() < 0 {
 			continue
 		}
 		c, _ := ln.Accept()
