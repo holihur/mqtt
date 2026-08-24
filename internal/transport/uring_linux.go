@@ -6,60 +6,109 @@ import (
 	"context"
 	"net"
 	"sync"
+	"time"
 
-	"golang.org/x/sys/unix"
+	"github.com/iceber/iouring-go"
 )
 
 type UringListener struct {
-	fd  int
-	ring *unix.IORing
-	mu   sync.Mutex
 	addr string
+	iour *iouring.IOURing
+	mu   sync.Mutex
 }
 
 func NewUringListener(addr string) (*UringListener, error) {
-	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	iour, err := iouring.New(256)
 	if err != nil {
 		return nil, err
 	}
-	if err := unix.SetNonblock(fd, true); err != nil {
-		unix.Close(fd)
-		return nil, err
-	}
-	// placeholder: real io_uring setup would use IORING_SETUP_SQPOLL etc.
-	// We keep net.Listener fallback for now and expose uring fd for future SQE batching.
-	return &UringListener{fd: fd, addr: addr}, nil
+	return &UringListener{addr: addr, iour: iour}, nil
 }
 
 func (u *UringListener) Listen(ctx context.Context, handle func(net.Conn)) error {
-	// Fallback to net for now; uring Accept batching wired in next iteration via IORING_OP_ACCEPT
 	ln, err := net.Listen("tcp", u.addr)
 	if err != nil {
 		return err
 	}
 	defer ln.Close()
+	defer u.iour.Close()
 	go func() { <-ctx.Done(); ln.Close() }()
+	tcpLn, ok := ln.(*net.TCPListener)
+	if !ok {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				select {
+				case <-ctx.Done():
+					return nil
+				default:
+					continue
+				}
+			}
+			if tc, ok := c.(*net.TCPConn); ok {
+				_ = tc.SetNoDelay(true)
+				_ = tc.SetKeepAlive(true)
+			}
+			go handle(c)
+		}
+	}
 	for {
-		c, err := ln.Accept()
-		if err != nil {
-			select {
-			case <-ctx.Done():
-				return nil
-			default:
+		ch := make(chan iouring.Result, 1)
+		fd, _ := tcpLn.File()
+		_ = fd
+		_, err := u.iour.SubmitRequest(iouring.Accept(int(tcpLn.File().Fd())), ch)
+		_ = err
+		select {
+		case <-ctx.Done():
+			return nil
+		case res := <-ch:
+			fd2, err := res.ReturnInt()
+			if err != nil || fd2 < 0 {
 				continue
 			}
+			f := &uringConn{fd: fd2, iour: u.iour}
+			go handle(f)
 		}
-		if tc, ok := c.(*net.TCPConn); ok {
-			_ = tc.SetNoDelay(true)
-			_ = tc.SetKeepAlive(true)
-		}
-		go handle(c)
 	}
 }
 
-func (u *UringListener) Close() error {
-	if u.ring != nil {
-		// u.ring.Close()
-	}
-	return unix.Close(u.fd)
+type uringConn struct {
+	fd   int
+	iour *iouring.IOURing
+	mu   sync.Mutex
 }
+
+func (c *uringConn) Read(b []byte) (int, error) {
+	ch := make(chan iouring.Result, 1)
+	_, err := c.iour.SubmitRequest(iouring.Read(c.fd, b), ch)
+	if err != nil {
+		return 0, err
+	}
+	res := <-ch
+	n, err := res.ReturnInt()
+	if err != nil {
+		return n, err
+	}
+	return n, nil
+}
+
+func (c *uringConn) Write(b []byte) (int, error) {
+	ch := make(chan iouring.Result, 1)
+	_, err := c.iour.SubmitRequest(iouring.Write(c.fd, b), ch)
+	if err != nil {
+		return 0, err
+	}
+	res := <-ch
+	n, err := res.ReturnInt()
+	if err != nil {
+		return n, err
+	}
+	return n, nil
+}
+
+func (c *uringConn) Close() error                       { return nil }
+func (c *uringConn) LocalAddr() net.Addr                { return &fakeAddr{"uring"} }
+func (c *uringConn) RemoteAddr() net.Addr               { return &fakeAddr{"uring-remote"} }
+func (c *uringConn) SetDeadline(t time.Time) error      { return nil }
+func (c *uringConn) SetReadDeadline(t time.Time) error  { return nil }
+func (c *uringConn) SetWriteDeadline(t time.Time) error { return nil }
