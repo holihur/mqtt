@@ -36,8 +36,14 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build
-        run: make build
+        run: task build
 
       - name: Lint
         uses: golangci/golangci-lint-action@v7
@@ -54,7 +60,7 @@ jobs:
         run: go test -run=^$ -bench=. ./... -benchmem -benchtime=1x 2>&1 | head -n 40
 
       - name: Fuzz (3s, GitHub only)
-        run: make fuzz 2>&1 | tail -n 30
+        run: task fuzz 2>&1 | tail -n 30
 
       - name: Govulncheck
         run: |

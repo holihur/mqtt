@@ -1,0 +1,92 @@
+version: '3'
+
+vars:
+  BIN: bin/broker
+  GO: go
+
+tasks:
+  build:
+    desc: 编译 broker 二进制
+    cmds:
+      - mkdir -p bin
+      - "{{.GO}} build -o {{.BIN}} ./cmd/broker"
+    sources:
+      - cmd/**/*.go
+      - internal/**/*.go
+      - go.mod
+      - go.sum
+    generates:
+      - "{{.BIN}}"
+    method: timestamp
+
+  lint:
+    desc: go vet + golangci-lint
+    cmds:
+      - "{{.GO}} vet ./..."
+      - cmd: which golangci-lint >/dev/null 2>&1 && golangci-lint run ./... || true
+        ignore_error: true
+
+  test:
+    desc: 运行测试 (race)
+    cmds:
+      - "{{.GO}} test -race -count=1 ./..."
+
+  test-v:
+    desc: 详细运行测试 (race -v)
+    cmds:
+      - "{{.GO}} test -race -count=1 -v ./..."
+
+  run:
+    desc: 编译并以 Redis 模式运行
+    deps: [build]
+    cmds:
+      - ./{{.BIN}} -tcp :1883 -ws :8083 -redis 127.0.0.1:6379 -pprof :6060
+
+  run-memory:
+    desc: 编译并以纯内存模式运行 (无 Redis)
+    deps: [build]
+    cmds:
+      - ./{{.BIN}} -tcp :1883 -ws :8083 -redis "" -pprof :6060
+
+  dev:
+    desc: 一键开发 — 自动拉起 redis 并启动 broker (:1883/:8083/:6060)
+    deps: [build]
+    cmds:
+      - |
+        echo "== dev: ensure redis =="
+        redis-cli ping >/dev/null 2>&1 || (echo "redis not running → docker compose up -d redis" && docker compose up -d redis && sleep 2 && redis-cli ping >/dev/null 2>&1 && echo "redis ready" || echo "redis still not ready, falling back to memory (broker will start without redis)")
+        echo "== dev: starting broker =="
+        echo "   mqtt://localhost:1883  (TCP)"
+        echo "   ws://localhost:8083/mqtt  (WebSocket)"
+        echo "   http://localhost:6060/debug/pprof  (pprof)"
+        echo "   http://localhost:6060/metrics  (prometheus)"
+        echo "   http://localhost:9090  (prometheus, if compose up)"
+        echo "   press Ctrl+C to stop"
+        ./{{.BIN}} -tcp :1883 -ws :8083 -redis 127.0.0.1:6379 -pprof :6060 -node dev -allow-anonymous true -allow-anonymous true
+
+  dev-down:
+    desc: 停止 redis
+    cmds:
+      - cmd: docker compose down 2>/dev/null || docker rm -f mqtt-redis 2>/dev/null || true
+        ignore_error: true
+
+  dev-logs:
+    desc: 查看 redis 日志
+    cmds:
+      - docker compose logs -f 2>/dev/null || docker logs -f mqtt-redis 2>/dev/null || true
+
+  bench:
+    desc: 运行基准测试
+    cmds:
+      - "{{.GO}} test -run=^$ -bench=. ./... -benchmem"
+
+  fuzz:
+    desc: 模糊测试 (仅 CI 跑，本地 3s)
+    cmds:
+      - "{{.GO}} test -run=^$ -fuzz=FuzzDecode -fuzztime=3s ./internal/codec"
+      - "{{.GO}} test -run=^$ -fuzz=FuzzSplitFrame -fuzztime=3s ./internal/parser"
+
+  clean:
+    desc: 清理构建产物
+    cmds:
+      - rm -rf bin

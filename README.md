@@ -28,10 +28,10 @@
 redis-server &
 
 # 单机内存版
-make run-memory
+task run-memory
 
 # 单机 Redis 版
-make run
+task run
 
 # 多实例集群（手动）
 ./bin/broker -tcp :1883 -ws :8083 -redis 127.0.0.1:6379 -node n1
@@ -98,4 +98,4 @@ internal/auth     Auth/ACL 插件
 - **Auth**：`AllowAll` / `SimpleAuth` / `JWT (HS256)` / `FileACL`（`--jwt-secret/--acl`），支持 `Chain`
 - **Fuzz**：`FuzzDecode`/`FuzzSplitFrame` 10w exec/s
 - **基准**：`docs/bench.md`（10k `CONNECT 0.48ms` / `PUBLISH 12µs`），`pprof + /metrics` 已暴露
-- **一键开发**：`make dev` 自动拉起 `redis` + `broker`（`:1883/:8083/:6060`）
+- **一键开发**：`task dev` 自动拉起 `redis` + `broker`（`:1883/:8083/:6060`）
