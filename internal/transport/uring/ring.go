@@ -26,21 +26,21 @@ type sqRing struct {
 type uint32Array uintptr
 
 func (a uint32Array) get(idx uint32) uint32 {
-	return *(*uint32)(unsafe.Pointer(uintptr(a) + uintptr(idx*4)))
+	return *(*uint32)(unsafe.Add(unsafe.Pointer(a), uintptr(idx*4)))
 }
 
 func (a uint32Array) set(idx uint32, value uint32) {
-	*(*uint32)(unsafe.Pointer(uintptr(a) + uintptr(idx*4))) = value
+	*(*uint32)(unsafe.Add(unsafe.Pointer(a), uintptr(idx*4))) = value
 }
 
 type sqeArray uintptr
 
 func (a sqeArray) get(idx uint32) *SQEntry {
-	return (*SQEntry)(unsafe.Pointer(uintptr(a) + uintptr(idx)*sqeSize))
+	return (*SQEntry)(unsafe.Add(unsafe.Pointer(a), uintptr(idx)*sqeSize))
 }
 
 func (a sqeArray) set(idx uint32, value SQEntry) {
-	*(*SQEntry)(unsafe.Pointer(uintptr(a) + uintptr(idx)*sqeSize)) = value
+	*(*SQEntry)(unsafe.Add(unsafe.Pointer(a), uintptr(idx)*sqeSize)) = value
 }
 
 type cqRing struct {
@@ -56,11 +56,11 @@ type cqRing struct {
 type cqeArray uintptr
 
 func (a cqeArray) get(idx uint32) CQEntry {
-	return *(*CQEntry)(unsafe.Pointer(uintptr(a) + uintptr(idx)*cqeSize))
+	return *(*CQEntry)(unsafe.Add(unsafe.Pointer(a), uintptr(idx)*cqeSize))
 }
 
 func (a cqeArray) set(idx uint32, value CQEntry) {
-	*(*CQEntry)(unsafe.Pointer(uintptr(a) + uintptr(idx)*cqeSize)) = value
+	*(*CQEntry)(unsafe.Add(unsafe.Pointer(a), uintptr(idx)*cqeSize)) = value
 }
 
 // Ring is an interface to io_uring kernel framework.
