@@ -17,7 +17,6 @@ import (
 	"mqtt/internal/topic"
 	"mqtt/internal/transport"
 	"net/http"
-	_ "net/http/pprof"
 	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -139,9 +138,10 @@ func New(cfg Config, store persistence.Store, authenticator auth.Authenticator) 
 func (b *Broker) Start(ctx context.Context) error {
 	b.stats.StartedAt = time.Now()
 	if b.cfg.PprofAddr != "" {
-		http.Handle("/metrics", promhttp.Handler())
-		go func() { _ = http.ListenAndServe(b.cfg.PprofAddr, nil) }()
-		slog.Info("pprof listening", "addr", b.cfg.PprofAddr)
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", promhttp.Handler())
+		go func() { _ = http.ListenAndServe(b.cfg.PprofAddr, mux) }()
+		slog.Info("metrics listening", "addr", b.cfg.PprofAddr)
 	}
 	if b.cluster != nil {
 		if err := b.cluster.Start(ctx); err != nil {
@@ -233,7 +233,11 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 			sess.MaximumPacketSize = *pkt.Properties.MaximumPacketSize
 		}
 		if pkt.Properties.TopicAliasMaximum != nil {
-			sess.TopicAliasMaximum = *pkt.Properties.TopicAliasMaximum
+			v := *pkt.Properties.TopicAliasMaximum
+			if v > 100 {
+				v = 100
+			}
+			sess.TopicAliasMaximum = v
 		}
 	}
 	b.statsMu.Lock()
@@ -443,8 +447,7 @@ func (b *Broker) readLoop(conn *transport.Conn, sess *session.Session) {
 }
 
 func (b *Broker) handlePublish(conn *transport.Conn, sess *session.Session, pkt *codec.Packet) {
-	// $SYS prefix reserved for broker only
-	if strings.HasPrefix(pkt.Topic, "$SYS/") && sess.ClientID != "sys" {
+	if strings.HasPrefix(pkt.Topic, "$SYS/") {
 		if pkt.QoS == 1 {
 			ack := &codec.Packet{Type: codec.TypePUBACK, Version: sess.Version, PacketID: pkt.PacketID, Reason: 0x87}
 			_ = conn.WritePacket(ack)
@@ -718,9 +721,10 @@ func (b *Broker) handleSubscribe(conn *transport.Conn, sess *session.Session, pk
 		// deliver retained messages matching this filter
 		retained, _ := b.store.ListRetained(context.Background())
 		for _, m := range retained {
-			// check if retained topic matches filter (use trie match trick: see if filter matches topic)
-			// simple: create temp trie with one filter and match
 			if matchFilter(m.Topic, sub.Filter) {
+				if !b.auth.Authorize(sess.ClientID, m.Topic, false) {
+					continue
+				}
 				pub := &codec.Packet{
 					Type:    codec.TypePUBLISH,
 					Version: conn.Version(),
@@ -903,6 +907,9 @@ func (b *Broker) scheduleRetry(clientID string, packetID uint16) {
 }
 
 func (b *Broker) onClusterMessage(msg *cluster.ClusterMessage) {
+	if msg.Topic == "" || msg.Topic[0] == '$' {
+		return
+	}
 	b.deliverLocal(msg.Topic, msg.Payload, msg.QoS, nil, msg.From)
 }
 

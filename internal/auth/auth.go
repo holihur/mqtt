@@ -2,6 +2,7 @@ package auth
 
 import (
 	"bufio"
+	"crypto/subtle"
 	"os"
 	"strings"
 	"time"
@@ -37,7 +38,7 @@ func (s *SimpleAuth) Authenticate(_, username string, password []byte) bool {
 	if !ok {
 		return false
 	}
-	return expect == string(password)
+	return subtle.ConstantTimeCompare([]byte(expect), password) == 1
 }
 func (s *SimpleAuth) Authorize(clientID, topic string, _ bool) bool {
 	if len(s.ACL) == 0 {
@@ -62,7 +63,7 @@ type JWTAuth struct {
 
 func (j *JWTAuth) Authenticate(clientID, username string, password []byte) bool {
 	if j.Secret == "" {
-		return true
+		return false
 	}
 	tokenStr := string(password)
 	if tokenStr == "" {

@@ -235,7 +235,10 @@ func decodeProperties(src []byte, pos int) (*Properties, int, error) {
 			i++
 			p.SharedSubAvailable = &v
 		default:
-			return nil, pos, ErrUnknownProperty
+			if i < end {
+				i++
+			}
+			continue
 		}
 	}
 	return p, end, nil

@@ -142,9 +142,14 @@ func (w *wsConn) Write(b []byte) (int, error) {
 	}
 	return len(b), nil
 }
-func (w *wsConn) SetDeadline(t time.Time) error      { return nil }
-func (w *wsConn) SetReadDeadline(t time.Time) error  { return nil }
-func (w *wsConn) SetWriteDeadline(t time.Time) error { return nil }
+func (w *wsConn) SetDeadline(t time.Time) error {
+	if err := w.Conn.SetReadDeadline(t); err != nil {
+		return err
+	}
+	return w.Conn.SetWriteDeadline(t)
+}
+func (w *wsConn) SetReadDeadline(t time.Time) error  { return w.Conn.SetReadDeadline(t) }
+func (w *wsConn) SetWriteDeadline(t time.Time) error { return w.Conn.SetWriteDeadline(t) }
 func (w *wsConn) LocalAddr() net.Addr                { return &fakeAddr{"ws"} }
 func (w *wsConn) RemoteAddr() net.Addr               { return &fakeAddr{"ws-remote"} }
 
