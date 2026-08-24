@@ -152,7 +152,9 @@ func (b *Broker) Start(ctx context.Context) error {
 	go b.sysTicker(ctx)
 	b.listener = transport.NewListener(b.cfg.TCPAddr, nil, b.cfg.WSAddr)
 	log.Printf("broker node=%s listening tcp=%s ws=%s redis=%s", b.nodeID, b.cfg.TCPAddr, b.cfg.WSAddr, b.cfg.RedisAddr)
-	return b.listener.Listen(ctx, b.handleRawConn)
+	err := b.listener.Listen(ctx, b.handleRawConn)
+	log.Printf("listener returned err=%v", err)
+	return err
 }
 func (b *Broker) sysTicker(ctx context.Context) {
 	ticker := time.NewTicker(10 * time.Second)

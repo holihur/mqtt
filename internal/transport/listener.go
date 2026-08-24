@@ -34,8 +34,11 @@ func (l *Listener) Listen(ctx context.Context, handle func(net.Conn)) error {
 		return fmt.Errorf("tcp listen %s: %w", l.addr, err)
 	}
 	defer l.ln.Close()
+	go func() {
+		<-ctx.Done()
+		l.ln.Close()
+	}()
 
-	// WS listener optional
 	if l.wsAddr != "" {
 		go l.serveWS(ctx, handle)
 	}
@@ -47,6 +50,9 @@ func (l *Listener) Listen(ctx context.Context, handle func(net.Conn)) error {
 			case <-ctx.Done():
 				return nil
 			default:
+				if ctx.Err() != nil {
+					return nil
+				}
 				continue
 			}
 		}
