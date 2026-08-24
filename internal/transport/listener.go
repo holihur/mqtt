@@ -43,7 +43,7 @@ func (l *Listener) Listen(ctx context.Context, handle func(net.Conn)) error {
 		go l.serveWS(ctx, handle)
 	}
 
-	sem := make(chan struct{}, 20000)
+	sem := make(chan struct{}, 150000)
 	for {
 		conn, err := l.ln.Accept()
 		if err != nil {
