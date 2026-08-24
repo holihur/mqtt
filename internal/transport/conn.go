@@ -25,7 +25,7 @@ type Conn struct {
 func NewConn(raw net.Conn, maxPacketSize int) *Conn {
 	return &Conn{
 		raw:     raw,
-		reader:  bufio.NewReader(raw),
+		reader:  bufio.NewReaderSize(raw, 1024),
 		parser:  parser.NewReader(raw, maxPacketSize),
 		version: 0,
 	}
@@ -63,6 +63,13 @@ func (c *Conn) WritePacket(p *codec.Packet) error {
 	c.writerMu.Lock()
 	defer c.writerMu.Unlock()
 	_, err = c.raw.Write(data)
+	return err
+}
+
+func (c *Conn) WriteRaw(data []byte) error {
+	c.writerMu.Lock()
+	defer c.writerMu.Unlock()
+	_, err := c.raw.Write(data)
 	return err
 }
 

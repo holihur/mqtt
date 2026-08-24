@@ -264,7 +264,7 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 	b.conns[clientID] = conn
 	b.sessions[clientID] = sess
 	b.mu.Unlock()
-	_ = b.store.SaveSession(context.Background(), sess)
+	go func(s *session.Session) { _ = b.store.SaveSession(context.Background(), s) }(sess)
 
 	// Will with validation and delay cap
 	if pkt.Will != nil {
@@ -615,6 +615,7 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 	}
 	b.sharedMu.Unlock()
 	subs := b.trie.Match(topicName)
+	qos0Cache := make(map[byte][]byte)
 	for _, sub := range subs {
 		if sub.ClientID == from && sub.NoLocal {
 			continue
@@ -656,13 +657,24 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 			sess.AddInflight(e)
 			b.scheduleRetry(sess.ClientID, pub.PacketID)
 		}
-		// v5 subscription ID
 		if sess.Version == codec.ProtocolV5 && props != nil && len(props.SubscriptionID) > 0 {
 			pub.PubProps = &codec.Properties{SubscriptionID: props.SubscriptionID}
 		}
 		mqttMessagesSent.Inc()
 		mqttInflight.Set(float64(len(sess.Inflight) + 1))
-		if err := conn.WritePacket(pub); err != nil {
+		if deliverQoS == 0 && pub.PubProps == nil {
+			ver := conn.Version()
+			if data, ok := qos0Cache[ver]; ok {
+				_ = conn.WriteRaw(data)
+			} else {
+				if d, err := codec.Encode(pub); err == nil {
+					qos0Cache[ver] = d
+					_ = conn.WriteRaw(d)
+				} else if err := conn.WritePacket(pub); err != nil {
+					slog.Warn("deliver failed", "client", sub.ClientID, "err", err)
+				}
+			}
+		} else if err := conn.WritePacket(pub); err != nil {
 			slog.Warn("deliver failed", "client", sub.ClientID, "err", err)
 		}
 	}

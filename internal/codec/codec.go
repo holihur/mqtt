@@ -492,23 +492,21 @@ func DecodeWithVersion(frame []byte, version byte) (*Packet, error) {
 // ---- ACK (PUBACK etc) ----
 
 func encodeAck(p *Packet) []byte {
-	var buf bytes.Buffer
-	_ = binary.Write(&buf, binary.BigEndian, p.PacketID)
+	var dst []byte
+	dst = appendUint16(dst, p.PacketID)
 	if p.Version == ProtocolV5 {
-		// v5 PUBACK may be 2,3,4 bytes depending on reason/properties
-		// If reason is 0 and no props, we can send 2 bytes (just packetID) per spec, but we encode full if needed
 		if p.Reason != 0 || p.AckProps != nil {
-			buf.WriteByte(p.Reason)
+			dst = append(dst, p.Reason)
 			if p.AckProps == nil {
-				buf.Write(encodeVarInt(0))
+				dst = appendVarInt(dst, 0)
 			} else {
-				buf.Write(encodeProperties(p.AckProps))
+				dst = append(dst, encodeProperties(p.AckProps)...)
 			}
 		} else if p.AckProps != nil {
-			buf.Write(encodeProperties(p.AckProps))
+			dst = append(dst, encodeProperties(p.AckProps)...)
 		}
 	}
-	return buf.Bytes()
+	return dst
 }
 func decodeAck(p *Packet, b []byte) error {
 	if len(b) < 2 {
@@ -538,13 +536,13 @@ func decodeAck(p *Packet, b []byte) error {
 // ---- SUBSCRIBE ----
 
 func encodeSubscribe(p *Packet) []byte {
-	var buf bytes.Buffer
-	_ = binary.Write(&buf, binary.BigEndian, p.PacketID)
+	var dst []byte
+	dst = appendUint16(dst, p.PacketID)
 	if p.Version == ProtocolV5 {
-		buf.Write(encodeProperties(p.SubProps))
+		dst = append(dst, encodeProperties(p.SubProps)...)
 	}
 	for _, s := range p.Subscriptions {
-		buf.Write(encodeString(s.Filter))
+		dst = appendString(dst, s.Filter)
 		var opts byte = s.QoS & 0x03
 		if p.Version == ProtocolV5 {
 			if s.NoLocal {
@@ -555,9 +553,9 @@ func encodeSubscribe(p *Packet) []byte {
 			}
 			opts |= (s.RetainHandling & 0x03) << 4
 		}
-		buf.WriteByte(opts)
+		dst = append(dst, opts)
 	}
-	return buf.Bytes()
+	return dst
 }
 func decodeSubscribe(p *Packet, b []byte) error {
 	if len(b) < 2 {
@@ -622,13 +620,13 @@ func tryParseSubscribePayload(b []byte, pos int, isV5 bool) ([]Subscription, boo
 // ---- SUBACK ----
 
 func encodeSuback(p *Packet) []byte {
-	var buf bytes.Buffer
-	_ = binary.Write(&buf, binary.BigEndian, p.PacketID)
+	var dst []byte
+	dst = appendUint16(dst, p.PacketID)
 	if p.Version == ProtocolV5 {
-		buf.Write(encodeProperties(p.SubackProps))
+		dst = append(dst, encodeProperties(p.SubackProps)...)
 	}
-	buf.Write(p.SubackCodes)
-	return buf.Bytes()
+	dst = append(dst, p.SubackCodes...)
+	return dst
 }
 func decodeSuback(p *Packet, b []byte) error {
 	if len(b) < 2 {
@@ -679,15 +677,15 @@ func decodeSuback(p *Packet, b []byte) error {
 // ---- UNSUBSCRIBE ----
 
 func encodeUnsubscribe(p *Packet) []byte {
-	var buf bytes.Buffer
-	_ = binary.Write(&buf, binary.BigEndian, p.PacketID)
+	var dst []byte
+	dst = appendUint16(dst, p.PacketID)
 	if p.Version == ProtocolV5 {
-		buf.Write(encodeProperties(p.UnsubProps))
+		dst = append(dst, encodeProperties(p.UnsubProps)...)
 	}
 	for _, t := range p.Topics {
-		buf.Write(encodeString(t))
+		dst = appendString(dst, t)
 	}
-	return buf.Bytes()
+	return dst
 }
 func decodeUnsubscribe(p *Packet, b []byte) error {
 	if len(b) < 2 {

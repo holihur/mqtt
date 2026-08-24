@@ -91,12 +91,12 @@ func SplitFrame(buf []byte, maxPacketSize int) ([]byte, []byte, error) {
 type Reader struct {
 	src           io.Reader
 	buf           []byte
-	tmp           [4096]byte
+	tmp           [1024]byte
 	maxPacketSize int
 }
 
 func NewReader(src io.Reader, maxPacketSize int) *Reader {
-	return &Reader{src: src, buf: make([]byte, 0, 4096), maxPacketSize: maxPacketSize}
+	return &Reader{src: src, buf: make([]byte, 0, 1024), maxPacketSize: maxPacketSize}
 }
 
 // ReadFrame blocks until one complete frame is available or error.

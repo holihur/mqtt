@@ -243,14 +243,14 @@ func decodeProperties(src []byte, pos int) (*Properties, int, error) {
 
 func encodeProperties(p *Properties) []byte {
 	if p == nil {
-		return encodeVarInt(0)
+		return appendVarInt(nil, 0)
 	}
 	var body []byte
-	appendU16 := func(id byte, v uint16) { body = append(body, id); body = append(body, encodeUint16(v)...) }
-	appendU32 := func(id byte, v uint32) { body = append(body, id); body = append(body, encodeUint32(v)...) }
+	appendU16 := func(id byte, v uint16) { body = append(body, id); body = appendUint16(body, v) }
+	appendU32 := func(id byte, v uint32) { body = append(body, id); body = appendUint32(body, v) }
 	appendByte := func(id, v byte) { body = append(body, id, v) }
-	appendStr := func(id byte, s string) { body = append(body, id); body = append(body, encodeString(s)...) }
-	appendBin := func(id byte, b []byte) { body = append(body, id); body = append(body, encodeBinary(b)...) }
+	appendStr := func(id byte, s string) { body = append(body, id); body = appendString(body, s) }
+	appendBin := func(id byte, b []byte) { body = append(body, id); body = appendBinary(body, b) }
 
 	if p.PayloadFormatIndicator != nil {
 		appendByte(PropPayloadFormatIndicator, *p.PayloadFormatIndicator)
@@ -269,7 +269,7 @@ func encodeProperties(p *Properties) []byte {
 	}
 	for _, sid := range p.SubscriptionID {
 		body = append(body, PropSubscriptionID)
-		body = append(body, encodeVarInt(int(sid))...)
+		body = appendVarInt(body, int(sid))
 	}
 	if p.SessionExpiryInterval != nil {
 		appendU32(PropSessionExpiryInterval, *p.SessionExpiryInterval)
@@ -315,8 +315,8 @@ func encodeProperties(p *Properties) []byte {
 	}
 	for _, up := range p.User {
 		body = append(body, PropUserProperty)
-		body = append(body, encodeString(up.Key)...)
-		body = append(body, encodeString(up.Val)...)
+		body = appendString(body, up.Key)
+		body = appendString(body, up.Val)
 	}
 	if p.MaximumPacketSize != nil {
 		appendU32(PropMaximumPacketSize, *p.MaximumPacketSize)
@@ -330,44 +330,44 @@ func encodeProperties(p *Properties) []byte {
 	if p.SharedSubAvailable != nil {
 		appendByte(PropSharedSubAvailable, *p.SharedSubAvailable)
 	}
-	return append(encodeVarInt(len(body)), body...)
+	return append(appendVarInt(nil, len(body)), body...)
 }
 
 // encodeWillProperties encodes will-specific properties (WillDelayInterval needs special handling)
 func encodeWillProperties(delay *uint32, props *Properties) []byte {
 	if delay == nil && (props == nil || props.User == nil) {
-		return encodeVarInt(0)
+		return appendVarInt(nil, 0)
 	}
 	var body []byte
 	if delay != nil {
 		body = append(body, PropWillDelayInterval)
-		body = append(body, encodeUint32(*delay)...)
+		body = appendUint32(body, *delay)
 	}
 	if props != nil {
 		for _, up := range props.User {
 			body = append(body, PropUserProperty)
-			body = append(body, encodeString(up.Key)...)
-			body = append(body, encodeString(up.Val)...)
+			body = appendString(body, up.Key)
+			body = appendString(body, up.Val)
 		}
 		if props.PayloadFormatIndicator != nil {
 			body = append(body, PropPayloadFormatIndicator, *props.PayloadFormatIndicator)
 		}
 		if props.MessageExpiryInterval != nil {
 			body = append(body, PropMessageExpiryInterval)
-			body = append(body, encodeUint32(*props.MessageExpiryInterval)...)
+			body = appendUint32(body, *props.MessageExpiryInterval)
 		}
 		if props.ContentType != nil {
 			body = append(body, PropContentType)
-			body = append(body, encodeString(*props.ContentType)...)
+			body = appendString(body, *props.ContentType)
 		}
 		if props.ResponseTopic != nil {
 			body = append(body, PropResponseTopic)
-			body = append(body, encodeString(*props.ResponseTopic)...)
+			body = appendString(body, *props.ResponseTopic)
 		}
 		if len(props.CorrelationData) > 0 {
 			body = append(body, PropCorrelationData)
-			body = append(body, encodeBinary(props.CorrelationData)...)
+			body = appendBinary(body, props.CorrelationData)
 		}
 	}
-	return append(encodeVarInt(len(body)), body...)
+	return append(appendVarInt(nil, len(body)), body...)
 }
