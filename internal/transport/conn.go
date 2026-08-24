@@ -62,7 +62,6 @@ func (c *Conn) WritePacket(p *codec.Packet) error {
 	}
 	c.writerMu.Lock()
 	defer c.writerMu.Unlock()
-	_ = c.raw.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	_, err = c.raw.Write(data)
 	return err
 }

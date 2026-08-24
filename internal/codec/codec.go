@@ -4,7 +4,22 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"sync"
 )
+
+var bufPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+
+func getBuf() *bytes.Buffer {
+	b := bufPool.Get().(*bytes.Buffer)
+	b.Reset()
+	return b
+}
+
+func putBuf(b *bytes.Buffer) {
+	if b.Cap() < 64*1024 {
+		bufPool.Put(b)
+	}
+}
 
 // Encode encodes packet to wire bytes (fixed header + remaining length + payload)
 func Encode(p *Packet) ([]byte, error) {
@@ -55,10 +70,9 @@ func Encode(p *Packet) ([]byte, error) {
 		return nil, ErrMalformedPacket
 	}
 	fixed := byte(p.Type<<4) | (flags & 0x0F)
-	rl := encodeVarInt(len(vhAndPayload))
-	out := make([]byte, 0, 1+len(rl)+len(vhAndPayload))
+	out := make([]byte, 0, 1+varIntLen(len(vhAndPayload))+len(vhAndPayload))
 	out = append(out, fixed)
-	out = append(out, rl...)
+	out = appendVarInt(out, len(vhAndPayload))
 	out = append(out, vhAndPayload...)
 	return out, nil
 }
@@ -153,7 +167,8 @@ func boolToByte(b bool) byte {
 // ---- CONNECT ----
 
 func encodeConnect(p *Packet) []byte {
-	var buf bytes.Buffer
+	buf := getBuf()
+	defer putBuf(buf)
 	proto := p.ProtocolName
 	if proto == "" {
 		if p.Version == ProtocolV31 {
@@ -183,7 +198,7 @@ func encodeConnect(p *Packet) []byte {
 		flags |= 0x80
 	}
 	buf.WriteByte(flags)
-	_ = binary.Write(&buf, binary.BigEndian, p.KeepAlive)
+	_ = binary.Write(buf, binary.BigEndian, p.KeepAlive)
 	// v5 properties
 	if p.Version == ProtocolV5 {
 		buf.Write(encodeProperties(p.Properties))
@@ -206,7 +221,9 @@ func encodeConnect(p *Packet) []byte {
 	if p.ConnectFlags.PasswordFlag {
 		buf.Write(encodeBinary(p.Password))
 	}
-	return buf.Bytes()
+	out := make([]byte, buf.Len())
+	copy(out, buf.Bytes())
+	return out
 }
 
 func decodeConnect(p *Packet, b []byte) error {
@@ -322,18 +339,20 @@ func decodeConnect(p *Packet, b []byte) error {
 // ---- CONNACK ----
 
 func encodeConnack(p *Packet) []byte {
-	var buf bytes.Buffer
+	buf := getBuf()
+	defer putBuf(buf)
 	buf.WriteByte(boolToByte(p.SessionPresent))
 	buf.WriteByte(p.ReasonCode)
 	if p.Version == ProtocolV5 {
-		// v5 may have properties even on failure
 		if p.ConnProperties == nil {
 			buf.Write(encodeVarInt(0))
 		} else {
 			buf.Write(encodeProperties(p.ConnProperties))
 		}
 	}
-	return buf.Bytes()
+	out := make([]byte, buf.Len())
+	copy(out, buf.Bytes())
+	return out
 }
 func decodeConnack(p *Packet, b []byte) error {
 	if len(b) < 2 {
@@ -363,16 +382,19 @@ func decodeConnack(p *Packet, b []byte) error {
 // ---- PUBLISH ----
 
 func encodePublish(p *Packet) []byte {
-	var buf bytes.Buffer
+	buf := getBuf()
+	defer putBuf(buf)
 	buf.Write(encodeString(p.Topic))
 	if p.QoS > 0 {
-		_ = binary.Write(&buf, binary.BigEndian, p.PacketID)
+		_ = binary.Write(buf, binary.BigEndian, p.PacketID)
 	}
 	if p.Version == ProtocolV5 {
 		buf.Write(encodeProperties(p.PubProps))
 	}
 	buf.Write(p.Payload)
-	return buf.Bytes()
+	out := make([]byte, buf.Len())
+	copy(out, buf.Bytes())
+	return out
 }
 func decodePublish(p *Packet, b []byte) error {
 	topic, pos, err := decodeString(b, 0)

@@ -43,6 +43,7 @@ func (l *Listener) Listen(ctx context.Context, handle func(net.Conn)) error {
 		go l.serveWS(ctx, handle)
 	}
 
+	sem := make(chan struct{}, 20000)
 	for {
 		conn, err := l.ln.Accept()
 		if err != nil {
@@ -53,10 +54,22 @@ func (l *Listener) Listen(ctx context.Context, handle func(net.Conn)) error {
 				if ctx.Err() != nil {
 					return nil
 				}
+				time.Sleep(5 * time.Millisecond)
 				continue
 			}
 		}
-		go handle(conn)
+		if tc, ok := conn.(*net.TCPConn); ok {
+			_ = tc.SetNoDelay(true)
+			_ = tc.SetKeepAlive(true)
+			_ = tc.SetKeepAlivePeriod(3 * time.Minute)
+			_ = tc.SetReadBuffer(32 * 1024)
+			_ = tc.SetWriteBuffer(32 * 1024)
+		}
+		sem <- struct{}{}
+		go func(c net.Conn) {
+			defer func() { <-sem }()
+			handle(c)
+		}(conn)
 	}
 }
 

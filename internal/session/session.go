@@ -21,9 +21,10 @@ type Session struct {
 	Subscriptions map[string]byte // filter -> QoS
 
 	// Inflight for QoS1/2
-	mu       sync.Mutex
+	Mu       sync.Mutex
 	Inflight map[uint16]*InflightEntry
 	NextID   uint16
+	freeIDs  []uint16
 
 	ReceiveMaximum    uint16
 	MaximumPacketSize uint32
@@ -71,8 +72,16 @@ func NewSession(clientID string, version byte, cleanStart bool, expiry uint32) *
 }
 
 func (s *Session) NextPacketID() uint16 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+	if len(s.freeIDs) > 0 {
+		n := len(s.freeIDs) - 1
+		id := s.freeIDs[n]
+		s.freeIDs = s.freeIDs[:n]
+		if _, exists := s.Inflight[id]; !exists {
+			return id
+		}
+	}
 	for i := 0; i < 65535; i++ {
 		id := s.NextID
 		s.NextID++
@@ -87,24 +96,27 @@ func (s *Session) NextPacketID() uint16 {
 }
 
 func (s *Session) AddInflight(e *InflightEntry) {
-	s.mu.Lock()
+	s.Mu.Lock()
 	s.Inflight[e.PacketID] = e
-	s.mu.Unlock()
+	s.Mu.Unlock()
 }
 func (s *Session) RemoveInflight(id uint16) {
-	s.mu.Lock()
+	s.Mu.Lock()
 	delete(s.Inflight, id)
-	s.mu.Unlock()
+	if len(s.freeIDs) < 1024 {
+		s.freeIDs = append(s.freeIDs, id)
+	}
+	s.Mu.Unlock()
 }
 func (s *Session) GetInflight(id uint16) (*InflightEntry, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
 	e, ok := s.Inflight[id]
 	return e, ok
 }
-func (s *Session) InflightCount() int { s.mu.Lock(); defer s.mu.Unlock(); return len(s.Inflight) }
+func (s *Session) InflightCount() int { s.Mu.Lock(); defer s.Mu.Unlock(); return len(s.Inflight) }
 func (s *Session) CanSend() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
 	return uint16(len(s.Inflight)) < s.ReceiveMaximum
 }

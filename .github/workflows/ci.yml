@@ -105,3 +105,33 @@ jobs:
           kill $pid || true
           wait $pid || true
           trap - EXIT
+
+  c10k:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Vet
+        run: go vet ./...
+      - name: Build
+        run: go build -o bin/broker ./cmd/broker
+      - name: Tune limits
+        run: |
+          ulimit -n 65536
+          ulimit -n
+          sysctl -w net.core.somaxconn=65535 2>/dev/null || true
+          sysctl -w net.ipv4.tcp_max_syn_backlog=65535 2>/dev/null || true
+          sysctl -w net.core.netdev_max_backlog=5000 2>/dev/null || true
+      - name: c10k 10k/60s
+        run: go test -run TestC10k -count=1 -v ./bench -c10k-n=10000 -c10k-hold=60s 2>&1 | tee c10k.txt; tail -n 40 c10k.txt
+      - name: Upload c10k log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: c10k-log
+          path: c10k.txt

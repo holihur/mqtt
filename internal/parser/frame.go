@@ -91,6 +91,7 @@ func SplitFrame(buf []byte, maxPacketSize int) ([]byte, []byte, error) {
 type Reader struct {
 	src           io.Reader
 	buf           []byte
+	tmp           [4096]byte
 	maxPacketSize int
 }
 
@@ -100,30 +101,21 @@ func NewReader(src io.Reader, maxPacketSize int) *Reader {
 
 // ReadFrame blocks until one complete frame is available or error.
 func (r *Reader) ReadFrame() ([]byte, error) {
-	tmp := make([]byte, 4096)
 	for {
 		frame, leftover, err := SplitFrame(r.buf, r.maxPacketSize)
 		if err == nil {
-			// copy frame before overwriting buf
 			cp := make([]byte, len(frame))
 			copy(cp, frame)
-			r.buf = leftover
-			// compact if needed
-			if len(r.buf) == 0 {
-				r.buf = r.buf[:0]
-			} else {
-				nb := make([]byte, len(leftover))
-				copy(nb, leftover)
-				r.buf = nb
-			}
+			n := copy(r.buf, leftover)
+			r.buf = r.buf[:n]
 			return cp, nil
 		}
 		if err != nil && !errors.Is(err, ErrIncompletePacket) {
 			return nil, err
 		}
-		n, readErr := r.src.Read(tmp)
+		n, readErr := r.src.Read(r.tmp[:])
 		if n > 0 {
-			r.buf = append(r.buf, tmp[:n]...)
+			r.buf = append(r.buf, r.tmp[:n]...)
 		}
 		if readErr != nil {
 			if readErr == io.EOF {

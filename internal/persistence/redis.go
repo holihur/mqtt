@@ -102,16 +102,26 @@ func (r *RedisStore) DeleteRetained(ctx context.Context, topic string) error {
 	return r.cli.Del(ctx, r.key("retain", topic)).Err()
 }
 func (r *RedisStore) ListRetained(ctx context.Context) ([]*Message, error) {
-	var out []*Message
+	var keys []string
 	iter := r.cli.Scan(ctx, 0, r.key("retain", "*"), 0).Iterator()
 	for iter.Next(ctx) {
-		k := iter.Val()
-		data, err := r.cli.Get(ctx, k).Bytes()
-		if err != nil {
+		keys = append(keys, iter.Val())
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	vals, err := r.cli.MGet(ctx, keys...).Result()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*Message, 0, len(vals))
+	for _, v := range vals {
+		s, ok := v.(string)
+		if !ok || s == "" {
 			continue
 		}
 		var m Message
-		if err := json.Unmarshal(data, &m); err != nil {
+		if err := json.Unmarshal([]byte(s), &m); err != nil {
 			continue
 		}
 		out = append(out, &m)

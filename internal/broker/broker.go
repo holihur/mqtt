@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"log/slog"
 	"mqtt/internal/auth"
 	"mqtt/internal/cluster"
 	"mqtt/internal/codec"
@@ -88,7 +89,7 @@ func New(cfg Config, store persistence.Store, authenticator auth.Authenticator) 
 			if acl, err := auth.NewFileACL(cfg.ACLFile); err == nil {
 				chain = append(chain, acl)
 			} else {
-				log.Printf("acl file load failed %s: %v", cfg.ACLFile, err)
+				slog.Warn("acl file load failed", "file", cfg.ACLFile, "err", err)
 			}
 		}
 		if len(chain) == 0 {
@@ -122,7 +123,7 @@ func New(cfg Config, store persistence.Store, authenticator auth.Authenticator) 
 		cli := redis.NewUniversalClient(&redis.UniversalOptions{Addrs: []string{cfg.RedisAddr}})
 		// test ping but not fatal
 		if err := cli.Ping(context.Background()).Err(); err != nil {
-			log.Printf("redis ping failed: %v (cluster disabled)", err)
+			slog.Warn("redis ping failed, cluster disabled", "err", err)
 		} else {
 			b.redisCli = cli
 			b.cluster = cluster.New(cli, cfg.NodeID, "mqtt", b.onClusterMessage)
@@ -140,20 +141,20 @@ func (b *Broker) Start(ctx context.Context) error {
 	if b.cfg.PprofAddr != "" {
 		http.Handle("/metrics", promhttp.Handler())
 		go func() { _ = http.ListenAndServe(b.cfg.PprofAddr, nil) }()
-		log.Printf("pprof listening %s", b.cfg.PprofAddr)
+		slog.Info("pprof listening", "addr", b.cfg.PprofAddr)
 	}
 	if b.cluster != nil {
 		if err := b.cluster.Start(ctx); err != nil {
 			log.Printf("cluster start failed: %v", err)
 		} else {
-			log.Printf("cluster started node=%s", b.nodeID)
+			slog.Info("cluster started", "node", b.nodeID)
 		}
 	}
 	go b.sysTicker(ctx)
 	b.listener = transport.NewListener(b.cfg.TCPAddr, nil, b.cfg.WSAddr)
-	log.Printf("broker node=%s listening tcp=%s ws=%s redis=%s", b.nodeID, b.cfg.TCPAddr, b.cfg.WSAddr, b.cfg.RedisAddr)
+	slog.Info("broker listening", "node", b.nodeID, "tcp", b.cfg.TCPAddr, "ws", b.cfg.WSAddr, "redis", b.cfg.RedisAddr)
 	err := b.listener.Listen(ctx, b.handleRawConn)
-	log.Printf("listener returned err=%v", err)
+	slog.Debug("listener returned", "err", err)
 	return err
 }
 func (b *Broker) sysTicker(ctx context.Context) {
@@ -184,12 +185,12 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 	_ = raw.SetReadDeadline(time.Now().Add(10 * time.Second))
 	pkt, err := conn.ReadPacket()
 	if err != nil {
-		log.Printf("read CONNECT failed %s: %v", raw.RemoteAddr(), err)
+		slog.Debug("read CONNECT failed", "addr", raw.RemoteAddr().String(), "err", err)
 		_ = raw.Close()
 		return
 	}
 	if pkt.Type != codec.TypeCONNECT {
-		log.Printf("first packet not CONNECT from %s", raw.RemoteAddr())
+		slog.Warn("first packet not CONNECT", "addr", raw.RemoteAddr().String())
 		_ = raw.Close()
 		return
 	}
@@ -215,7 +216,7 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 	// Session handling
 	sess, err := b.getOrCreateSession(pkt)
 	if err != nil {
-		log.Printf("session error: %v", err)
+		slog.Error("session error", "err", err)
 		_ = conn.Close()
 		return
 	}
@@ -250,8 +251,10 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 	} else {
 		expiry = 0xFFFFFFFF // v3 clean false => never expire
 	}
+	sess.Mu.Lock()
 	sess.CleanStart = clean
 	sess.ExpiryInterval = expiry
+	sess.Mu.Unlock()
 
 	// Kick existing connection with same clientID
 	b.mu.Lock()
@@ -342,10 +345,6 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 		b.onClientDisconnect(clientID, sess, false)
 	})
 	go b.readLoop(conn, sess)
-	// keepalive monitor
-	if pkt.KeepAlive > 0 {
-		go b.keepAliveMonitor(conn, sess)
-	}
 }
 
 func (b *Broker) getOrCreateSession(pkt *codec.Packet) (*session.Session, error) {
@@ -390,6 +389,11 @@ func (b *Broker) getOrCreateSession(pkt *codec.Packet) (*session.Session, error)
 func (b *Broker) readLoop(conn *transport.Conn, sess *session.Session) {
 	defer func() { _ = conn.Close() }()
 	for {
+		if sess.KeepAlive > 0 {
+			_ = conn.Raw().SetReadDeadline(time.Now().Add(time.Duration(float64(sess.KeepAlive)*1.5) * time.Second))
+		} else {
+			_ = conn.Raw().SetReadDeadline(time.Time{})
+		}
 		pkt, err := conn.ReadPacket()
 		if err != nil {
 			// trigger will if not clean disconnect
@@ -433,7 +437,7 @@ func (b *Broker) readLoop(conn *transport.Conn, sess *session.Session) {
 			b.onClientDisconnect(conn.ClientID(), sess, true)
 			return
 		default:
-			log.Printf("unhandled packet type %d from %s", pkt.Type, conn.ClientID())
+			slog.Debug("unhandled packet", "type", pkt.Type, "client", conn.ClientID())
 		}
 	}
 }
@@ -552,7 +556,7 @@ func (b *Broker) routeMessage(topicName string, payload []byte, qos byte, retain
 		return
 	}
 	if b.cluster != nil {
-		_ = b.cluster.Publish(context.Background(), topicName, payload, qos, retain)
+		go func() { _ = b.cluster.Publish(context.Background(), topicName, payload, qos, retain) }()
 	}
 	b.deliverLocal(topicName, payload, qos, props, from)
 }
@@ -659,7 +663,7 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 		mqttMessagesSent.Inc()
 		mqttInflight.Set(float64(len(sess.Inflight) + 1))
 		if err := conn.WritePacket(pub); err != nil {
-			log.Printf("deliver to %s failed: %v", sub.ClientID, err)
+			slog.Warn("deliver failed", "client", sub.ClientID, "err", err)
 		}
 	}
 }
@@ -790,32 +794,45 @@ func (b *Broker) handleUnsubscribe(conn *transport.Conn, sess *session.Session, 
 func (b *Broker) onClientDisconnect(clientID string, sess *session.Session, clean bool) {
 	b.mu.Lock()
 	delete(b.conns, clientID)
-	// clean up trie entries for this client? Keep if session expiry >0
-	if sess != nil && sess.ExpiryInterval == 0 {
-		for f := range sess.Subscriptions {
+	b.mu.Unlock()
+	if sess == nil {
+		return
+	}
+	sess.Mu.Lock()
+	expiry := sess.ExpiryInterval
+	subs := make([]string, 0, len(sess.Subscriptions))
+	for f := range sess.Subscriptions {
+		subs = append(subs, f)
+	}
+	sess.Mu.Unlock()
+	if expiry == 0 {
+		for _, f := range subs {
 			b.trie.Remove(f, clientID)
 		}
 		if !clean {
-			// will handling
 			b.handleWill(sess)
+		} else {
+			sess.Mu.Lock()
+			sess.Will = nil
+			sess.Mu.Unlock()
 		}
-		// delete session if clean
-		b.mu.Unlock()
 		_ = b.store.DeleteSession(context.Background(), clientID)
 		return
 	}
-	b.mu.Unlock()
-	if !clean && sess != nil && sess.Will != nil {
+	if !clean && sess.Will != nil {
 		b.handleWill(sess)
+	} else if clean {
+		sess.Mu.Lock()
+		sess.Will = nil
+		sess.Mu.Unlock()
 	}
-	// else keep session for expiry interval (store persists)
-	if sess != nil {
-		sess.Connected = false
-		_ = b.store.SaveSession(context.Background(), sess)
-		if sess.ExpiryInterval == 0 && clean {
-			for f := range sess.Subscriptions {
-				b.trie.Remove(f, clientID)
-			}
+	sess.Mu.Lock()
+	sess.Connected = false
+	sess.Mu.Unlock()
+	_ = b.store.SaveSession(context.Background(), sess)
+	if expiry == 0 && clean {
+		for _, f := range subs {
+			b.trie.Remove(f, clientID)
 		}
 	}
 }

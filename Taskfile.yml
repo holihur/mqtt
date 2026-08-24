@@ -86,6 +86,26 @@ tasks:
       - "{{.GO}} test -run=^$ -fuzz=FuzzDecode -fuzztime=3s ./internal/codec"
       - "{{.GO}} test -run=^$ -fuzz=FuzzSplitFrame -fuzztime=3s ./internal/parser"
 
+  c10k-check:
+    desc: 检查 c10k 系统参数 (ulimit/somaxconn/buffers)
+    cmds:
+      - ulimit -n
+      - sysctl net.core.somaxconn net.ipv4.tcp_max_syn_backlog net.core.netdev_max_backlog 2>/dev/null || echo "sysctl N/A on macOS"
+      - sysctl net.core.rmem_max net.core.wmem_max 2>/dev/null || echo "rmem/wmem N/A"
+      - echo 'listener TCP_NODELAY + 32KB buffers + semaphore 20k'
+
+  c10k:
+    desc: 10k 并发持有 60s 压测
+    deps: [build]
+    cmds:
+      - go test -run TestC10k -count=1 -v ./bench -c10k-n=10000 -c10k-hold=60s
+
+  c10k-quick:
+    desc: 1k 快速验证 (10s)
+    deps: [build]
+    cmds:
+      - go test -run TestC10k -count=1 -v ./bench -c10k-n=1000 -c10k-hold=10s
+
   clean:
     desc: 清理构建产物
     cmds:

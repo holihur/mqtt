@@ -3,12 +3,13 @@ package main
 import (
 	"context"
 	"flag"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"mqtt/internal/broker"
+	"mqtt/internal/logger"
 	"mqtt/internal/persistence"
 
 	"github.com/redis/go-redis/v9"
@@ -42,9 +43,12 @@ func main() {
 		aclFile        = flag.String("acl", "", "ACL file path (empty to disable)")
 		jwtSecret      = flag.String("jwt-secret", "", "JWT HMAC secret (empty to disable)")
 		allowAnonymous = flag.String("allow-anonymous", "false", "allow anonymous (true/false)")
+		logLevel       = flag.String("log-level", "info", "log level: debug/info/warn/error (lower more verbose)")
 		nodeID         = flag.String("node", "", "Node ID (auto if empty)")
 	)
 	flag.Parse()
+	logger.Init(*logLevel)
+	slog.Info("starting", "log_level", *logLevel)
 
 	var store persistence.Store
 	var redisCli redis.UniversalClient
@@ -56,12 +60,12 @@ func main() {
 		}
 		cli := redis.NewUniversalClient(&redis.UniversalOptions{Addrs: addrs})
 		if err := cli.Ping(context.Background()).Err(); err != nil {
-			log.Printf("redis unavailable %s: %v, falling back to memory store", *redisAddr, err)
+			slog.Warn("redis unavailable, falling back to memory", "addr", *redisAddr, "err", err)
 			store = persistence.NewMemoryStore()
 		} else {
 			store = persistence.NewRedisStoreWithClient(cli, "mqtt")
 			redisCli = cli
-			log.Printf("using redis store at %s", *redisAddr)
+			slog.Info("using redis store", "addr", *redisAddr)
 		}
 	} else {
 		store = persistence.NewMemoryStore()
@@ -90,18 +94,19 @@ func main() {
 		ch := make(chan os.Signal, 1)
 		signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 		<-ch
-		log.Println("shutting down...")
+		slog.Info("shutting down")
 		cancel()
 		sig2 := make(chan os.Signal, 1)
 		signal.Notify(sig2, syscall.SIGINT, syscall.SIGTERM)
 		go func() {
 			<-sig2
-			log.Println("force exit")
+			slog.Warn("force exit")
 			os.Exit(1)
 		}()
 	}()
 
 	if err := b.Start(ctx); err != nil {
-		log.Fatalf("broker error: %v", err)
+		slog.Error("broker error", "err", err)
+		os.Exit(1)
 	}
 }

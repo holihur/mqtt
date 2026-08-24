@@ -80,43 +80,41 @@ func (t *Trie) Match(topic string) []*subEntry {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	var result []*subEntry
-	var dfs func(n *node, idx int)
-	dfs = func(n *node, idx int) {
+	type frame struct {
+		n   *node
+		idx int
+	}
+	stack := []frame{{t.root, 0}}
+	for len(stack) > 0 {
+		f := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		n, idx := f.n, f.idx
 		if n == nil {
-			return
+			continue
 		}
 		if idx == len(levels) {
 			for _, s := range n.subs {
 				result = append(result, s)
 			}
-			// also check child '#' at this exact end (e.g., topic a/b matches filter a/b/# ? No, # must be last and matches 0 or more levels. Our dfs handles # below)
 			if child, ok := n.children["#"]; ok {
 				for _, s := range child.subs {
 					result = append(result, s)
 				}
 			}
-			return
+			continue
 		}
-		// exact match
-		if child, ok := n.children[levels[idx]]; ok {
-			dfs(child, idx+1)
-		}
-		// + wildcard (single level)
-		if child, ok := n.children["+"]; ok {
-			dfs(child, idx+1)
-		}
-		// # wildcard (multi level, must be last in filter)
 		if child, ok := n.children["#"]; ok {
 			for _, s := range child.subs {
 				result = append(result, s)
 			}
 		}
-		// $SYS isolation: topics starting with $ should not match filters starting with +/# unless filter also starts with $
-		// Our generic dfs already respects: filter "#"/"+" won't match "$SYS/..." unless filter is "$SYS/#" explicitly, because $SYS first level is "$SYS", not "+".
-		// But filter "#" as root child would match everything including $SYS; spec says # should not match $SYS. We filter later.
+		if child, ok := n.children["+"]; ok {
+			stack = append(stack, frame{child, idx + 1})
+		}
+		if child, ok := n.children[levels[idx]]; ok {
+			stack = append(stack, frame{child, idx + 1})
+		}
 	}
-	// Special handling for root "#" matching: if topic starts with $, don't return subscriptions to "#" or "+/..."
-	dfs(t.root, 0)
 	// Filter $SYS violation: if topic starts with "$", remove subs whose filter is "#" or starts with "+"
 	if strings.HasPrefix(topic, "$") {
 		filtered := result[:0]
