@@ -62,7 +62,6 @@ func TestWriteReadPacket(t *testing.T) {
 		_ = conn.WritePacket(pkt)
 	}()
 
-	// Read raw bytes from client side and decode
 	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
 	frame := make([]byte, 4096)
 	n, err := client.Read(frame)
@@ -87,7 +86,6 @@ func TestReadPacket(t *testing.T) {
 
 	conn := NewConn(server, 1<<20)
 
-	// Encode a PINGRESP and write from client side
 	pingResp := &codec.Packet{Type: codec.TypePINGRESP, Version: codec.ProtocolV311}
 	data, err := codec.Encode(pingResp)
 	if err != nil {
@@ -115,7 +113,6 @@ func TestReadPacket_V5(t *testing.T) {
 	conn := NewConn(server, 1<<20)
 	conn.SetVersion(codec.ProtocolV5)
 
-	// Encode a CONNACK v5
 	pkt := &codec.Packet{
 		Type:          codec.TypeCONNACK,
 		Version:       codec.ProtocolV5,
@@ -168,7 +165,6 @@ func TestConnClose(t *testing.T) {
 		t.Fatal("onClose not called")
 	}
 
-	// double close should be no-op
 	if err := conn.Close(); err != nil {
 		t.Fatalf("double Close: %v", err)
 	}
@@ -237,7 +233,6 @@ func TestListenerListen_Accept(t *testing.T) {
 		})
 	}()
 
-	// connect
 	conn, err := net.Dial("tcp", ln.Addr().String())
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -258,7 +253,7 @@ func TestListenerListen_Accept(t *testing.T) {
 func TestListenerListen_NoTCPNoWS(t *testing.T) {
 	l := NewListener("", nil, "")
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel immediately
+	cancel()
 	err := l.Listen(ctx, func(net.Conn) {})
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -281,7 +276,6 @@ func TestWritePacket_EncodeError(t *testing.T) {
 	defer server.Close()
 
 	conn := NewConn(server, 1<<20)
-	// Type 0 is invalid, should cause encode error
 	err := conn.WritePacket(&codec.Packet{Type: 0})
 	if err == nil {
 		t.Fatal("expected encode error for type 0")
@@ -292,7 +286,6 @@ func TestReadPacket_ClosedMidRead(t *testing.T) {
 	server, client := net.Pipe()
 	conn := NewConn(server, 1<<20)
 
-	// Close client immediately (writer side)
 	client.Close()
 
 	_, err := conn.ReadPacket()
@@ -300,7 +293,6 @@ func TestReadPacket_ClosedMidRead(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	if err != io.EOF && !isClosedPipeErr(err) {
-		// acceptable: any error
 	}
 }
 
@@ -381,7 +373,6 @@ func TestReadPacket_Multiple(t *testing.T) {
 
 	conn := NewConn(server, 1<<20)
 
-	// Encode two packets
 	pingResp := &codec.Packet{Type: codec.TypePINGRESP, Version: codec.ProtocolV311}
 	data1, _ := codec.Encode(pingResp)
 	data2, _ := codec.Encode(pingResp)
@@ -391,7 +382,6 @@ func TestReadPacket_Multiple(t *testing.T) {
 		client.Close()
 	}()
 
-	// Read first
 	got1, err := conn.ReadPacket()
 	if err != nil {
 		t.Fatalf("ReadPacket 1: %v", err)
@@ -400,7 +390,6 @@ func TestReadPacket_Multiple(t *testing.T) {
 		t.Fatalf("type 1 = %d", got1.Type)
 	}
 
-	// Read second
 	got2, err := conn.ReadPacket()
 	if err != nil {
 		t.Fatalf("ReadPacket 2: %v", err)
@@ -415,7 +404,6 @@ func TestConnClose_NoOnClose(t *testing.T) {
 	defer client.Close()
 
 	conn := NewConn(server, 1<<20)
-	// Close without setting onClose - should not panic
 	if err := conn.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -440,7 +428,6 @@ func TestListenerListen_MultipleConnections(t *testing.T) {
 		})
 	}()
 
-	// Connect 3 clients
 	for i := 0; i < 3; i++ {
 		conn, err := net.Dial("tcp", ln.Addr().String())
 		if err != nil {
@@ -449,7 +436,6 @@ func TestListenerListen_MultipleConnections(t *testing.T) {
 		defer conn.Close()
 	}
 
-	// Receive 3 connections
 	for i := 0; i < 3; i++ {
 		select {
 		case c := <-conns:
@@ -480,7 +466,6 @@ func TestListenerAddr_WithLn(t *testing.T) {
 
 func TestListenerClose_WithWS(t *testing.T) {
 	l := NewListener("", nil, ":0")
-	// Close without starting - should not panic
 	if err := l.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -554,5 +539,115 @@ func TestWritePacket_PublishQoS1(t *testing.T) {
 	}
 	if got.Topic != "test/qos1" || got.QoS != 1 || got.PacketID != 42 {
 		t.Fatalf("mismatch: topic=%q qos=%d pid=%d", got.Topic, got.QoS, got.PacketID)
+	}
+}
+
+func TestWsConnLocalAddr(t *testing.T) {
+	wc := &wsConn{}
+	addr := wc.LocalAddr()
+	if addr.Network() != "ws" || addr.String() != "ws" {
+		t.Fatalf("LocalAddr = %v", addr)
+	}
+}
+
+func TestWsConnRemoteAddr(t *testing.T) {
+	wc := &wsConn{}
+	addr := wc.RemoteAddr()
+	if addr.Network() != "ws-remote" || addr.String() != "ws-remote" {
+		t.Fatalf("RemoteAddr = %v", addr)
+	}
+}
+
+func TestListenerListen_ContextCancel(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	l := NewListener("", nil, "")
+	l.SetCustomListener(ln)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- l.Listen(ctx, func(c net.Conn) {
+			c.Close()
+		})
+	}()
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Listen: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout")
+	}
+}
+
+func TestConnClose_NilOnClose(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+
+	conn := NewConn(server, 1<<20)
+	if err := conn.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestWritePacket_Disconnect(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+
+	conn := NewConn(server, 1<<20)
+	pkt := &codec.Packet{Type: codec.TypeDISCONNECT, Version: codec.ProtocolV311}
+
+	go func() {
+		if err := conn.WritePacket(pkt); err != nil {
+			t.Errorf("WritePacket: %v", err)
+		}
+	}()
+
+	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	frame := make([]byte, 4096)
+	n, err := client.Read(frame)
+	if err != nil {
+		t.Fatalf("client read: %v", err)
+	}
+	got, err := codec.Decode(frame[:n])
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Type != codec.TypeDISCONNECT {
+		t.Fatalf("type = %d, want DISCONNECT", got.Type)
+	}
+}
+
+func TestWritePacket_Puback(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+
+	conn := NewConn(server, 1<<20)
+	pkt := &codec.Packet{Type: codec.TypePUBACK, Version: codec.ProtocolV311, PacketID: 10}
+
+	go func() {
+		if err := conn.WritePacket(pkt); err != nil {
+			t.Errorf("WritePacket: %v", err)
+		}
+	}()
+
+	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	frame := make([]byte, 4096)
+	n, err := client.Read(frame)
+	if err != nil {
+		t.Fatalf("client read: %v", err)
+	}
+	got, err := codec.Decode(frame[:n])
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Type != codec.TypePUBACK || got.PacketID != 10 {
+		t.Fatalf("mismatch: type=%d pid=%d", got.Type, got.PacketID)
 	}
 }
