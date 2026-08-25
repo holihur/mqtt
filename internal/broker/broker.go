@@ -104,6 +104,13 @@ type Broker struct {
 	remoteTries map[string]*topic.Trie // nodeID -> trie of remote subs
 
 	hooks *hook.Manager
+
+	// lifecycle: 支持独立与嵌入式双模式
+	customListener net.Listener
+	runMu          sync.Mutex
+	running        bool
+	cancel         context.CancelFunc
+	metricsSrv     *http.Server
 }
 
 func storeCtx() (context.Context, context.CancelFunc) {
@@ -290,53 +297,40 @@ func (b *Broker) onClusterMeta(meta *cluster.ClusterMeta) {
 	}
 }
 
-func New(cfg Config, store persistence.Store, authenticator auth.Authenticator) *Broker {
+func buildAuthenticator(cfg Config) auth.Authenticator {
+	var chain []auth.Authenticator
+	if cfg.JWTSecret != "" {
+		chain = append(chain, &auth.JWTAuth{Secret: cfg.JWTSecret})
+	}
+	if cfg.ACLFile != "" {
+		if acl, err := auth.NewFileACL(cfg.ACLFile); err == nil {
+			chain = append(chain, acl)
+		} else {
+			slog.Warn("acl file load failed", "file", cfg.ACLFile, "err", err)
+		}
+	}
+	if len(chain) == 0 {
+		if cfg.AllowAnonymous {
+			return &auth.AllowAll{}
+		}
+		return &auth.DenyAll{}
+	}
+	if len(chain) == 1 {
+		return chain[0]
+	}
+	return &auth.Chain{Auths: chain}
+}
+
+func NewWithOptions(cfg Config, opts ...Option) (*Broker, error) {
+	cfg.ApplyDefaults()
 	if cfg.NodeID == "" {
 		cfg.NodeID = uuid.NewString()[:8]
 	}
-	if authenticator == nil {
-		var chain []auth.Authenticator
-		if cfg.JWTSecret != "" {
-			chain = append(chain, &auth.JWTAuth{Secret: cfg.JWTSecret})
-		}
-		if cfg.ACLFile != "" {
-			if acl, err := auth.NewFileACL(cfg.ACLFile); err == nil {
-				chain = append(chain, acl)
-			} else {
-				slog.Warn("acl file load failed", "file", cfg.ACLFile, "err", err)
-			}
-		}
-		if len(chain) == 0 {
-			if cfg.AllowAnonymous {
-				authenticator = &auth.AllowAll{}
-			} else {
-				authenticator = &auth.DenyAll{}
-			}
-		} else if len(chain) == 1 {
-			authenticator = chain[0]
-		} else {
-			authenticator = &auth.Chain{Auths: chain}
-		}
-	}
-	if cfg.MaxPacketSize == 0 {
-		cfg.MaxPacketSize = 1 << 20 // 1MB
-	}
-	if cfg.MaxConnections == 0 {
-		cfg.MaxConnections = 20000
-	}
-	if cfg.MaxPublishPerSec == 0 {
-		cfg.MaxPublishPerSec = 100
-	}
-	if cfg.MaxSubscribePerSec == 0 {
-		cfg.MaxSubscribePerSec = 20
-	}
 	b := &Broker{
 		cfg:         cfg,
-		store:       store,
 		trie:        topic.NewTrie(),
 		sharedSubs:  make(map[string]map[string][]string),
 		sharedIdx:   make(map[string]int),
-		auth:        authenticator,
 		nodeID:      cfg.NodeID,
 		conns:       make(map[string]*transport.Conn),
 		sessions:    make(map[string]*session.Session),
@@ -344,76 +338,289 @@ func New(cfg Config, store persistence.Store, authenticator auth.Authenticator) 
 		remoteTries: make(map[string]*topic.Trie),
 		hooks:       hook.NewManager(),
 	}
-	if aa := hook.NewAuthAdapter(authenticator); aa != nil {
-		b.hooks.Register(aa)
-	}
-	// setup redis cluster if addr provided
-	if cfg.RedisAddr != "" {
-		cli := redis.NewUniversalClient(&redis.UniversalOptions{Addrs: []string{cfg.RedisAddr}})
-		pingCtx, cancel := storeCtx()
-		pingErr := cli.Ping(pingCtx).Err()
-		cancel()
-		if pingErr != nil {
-			slog.Warn("redis ping failed, cluster disabled", "err", pingErr)
-		} else {
-			b.redisCli = cli
-			b.cluster = cluster.New(cli, cfg.NodeID, "mqtt", b.onClusterMessage)
-			b.cluster.SetOnMeta(b.onClusterMeta)
+	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
+		if err := opt(b); err != nil {
+			return nil, err
 		}
 	}
-	if cfg.TLSConfig == nil && cfg.TLSCertFile != "" {
-		if tc, err := loadTLSConfig(cfg.TLSCertFile, cfg.TLSKeyFile, cfg.TLSCAFile); err != nil {
-			slog.Warn("tls config load failed", "err", err)
-		} else {
-			cfg.TLSConfig = tc
-			b.cfg.TLSConfig = tc
-		}
+	if b.auth == nil {
+		b.auth = buildAuthenticator(b.cfg)
 	}
-	// If store is nil, use memory
 	if b.store == nil {
 		b.store = persistence.NewMemoryStore()
 	}
+	if b.nodeID == "" {
+		b.nodeID = b.cfg.NodeID
+	}
+	if aa := hook.NewAuthAdapter(b.auth); aa != nil {
+		b.hooks.Register(aa)
+	}
+	return b, nil
+}
+
+func New(cfg Config, store persistence.Store, authenticator auth.Authenticator) *Broker {
+	b, err := NewWithOptions(cfg, WithStore(store), func(br *Broker) error {
+		if authenticator != nil {
+			br.auth = authenticator
+		}
+		return nil
+	})
+	if err != nil {
+		// fallback: should not happen, but keep compat
+		slog.Warn("NewWithOptions failed, fallback", "err", err)
+		cfg.ApplyDefaults()
+		if cfg.NodeID == "" {
+			cfg.NodeID = uuid.NewString()[:8]
+		}
+		if authenticator == nil {
+			authenticator = buildAuthenticator(cfg)
+		}
+		if store == nil {
+			store = persistence.NewMemoryStore()
+		}
+		b = &Broker{
+			cfg:         cfg,
+			store:       store,
+			trie:        topic.NewTrie(),
+			sharedSubs:  make(map[string]map[string][]string),
+			sharedIdx:   make(map[string]int),
+			auth:        authenticator,
+			nodeID:      cfg.NodeID,
+			conns:       make(map[string]*transport.Conn),
+			sessions:    make(map[string]*session.Session),
+			limiters:    make(map[string]*clientLimiter),
+			remoteTries: make(map[string]*topic.Trie),
+			hooks:       hook.NewManager(),
+		}
+		if aa := hook.NewAuthAdapter(authenticator); aa != nil {
+			b.hooks.Register(aa)
+		}
+	}
+	// 保持对老代码的兼容：若 RedisAddr 非空且尚未建立 cluster，延迟到 Start 再建；
+	// 此处不做网络 IO，避免嵌入式构造阻塞。
 	return b
 }
 
-// RegisterHook adds a topic-based hook. Safe for concurrent use and for chaining before Start.
 func (b *Broker) RegisterHook(h hook.Hook) { b.hooks.Register(h) }
 
-// Hooks exposes the hook manager for inspection/testing.
 func (b *Broker) Hooks() *hook.Manager { return b.hooks }
 
-func (b *Broker) Start(ctx context.Context) error {
+func (b *Broker) ensureCluster() {
+	if b.cluster != nil || b.cfg.RedisAddr == "" {
+		return
+	}
+	cli := redis.NewUniversalClient(&redis.UniversalOptions{Addrs: []string{b.cfg.RedisAddr}})
+	pingCtx, cancel := storeCtx()
+	pingErr := cli.Ping(pingCtx).Err()
+	cancel()
+	if pingErr != nil {
+		slog.Warn("redis ping failed, cluster disabled", "err", pingErr)
+		return
+	}
+	b.redisCli = cli
+	b.cluster = cluster.New(cli, b.nodeID, "mqtt", b.onClusterMessage)
+	b.cluster.SetOnMeta(b.onClusterMeta)
+}
+
+func (b *Broker) ensureTLS() *tls.Config {
+	if b.cfg.TLSConfig != nil {
+		return b.cfg.TLSConfig
+	}
+	if b.cfg.TLSCertFile == "" {
+		return nil
+	}
+	if tc, err := loadTLSConfig(b.cfg.TLSCertFile, b.cfg.TLSKeyFile, b.cfg.TLSCAFile); err != nil {
+		slog.Warn("tls config load failed", "err", err)
+		return nil
+	} else {
+		b.cfg.TLSConfig = tc
+		return tc
+	}
+}
+
+func (b *Broker) initStart(ctx context.Context) (context.Context, error) {
+	b.runMu.Lock()
+	if b.running {
+		b.runMu.Unlock()
+		return nil, fmt.Errorf("broker already running")
+	}
+	b.running = true
+	b.runMu.Unlock()
+
+	if b.store == nil {
+		b.store = persistence.NewMemoryStore()
+	}
+	if b.auth == nil {
+		b.auth = buildAuthenticator(b.cfg)
+		if aa := hook.NewAuthAdapter(b.auth); aa != nil {
+			b.hooks.Register(aa)
+		}
+	}
+	b.cfg.ApplyDefaults()
+	if b.nodeID == "" {
+		b.nodeID = b.cfg.NodeID
+		if b.nodeID == "" {
+			b.nodeID = uuid.NewString()[:8]
+			b.cfg.NodeID = b.nodeID
+		}
+	}
 	b.stats.StartedAt = time.Now()
+	b.ensureCluster()
+	b.ensureTLS()
+
+	runCtx, cancel := context.WithCancel(ctx)
+	b.cancel = cancel
+
 	if b.cfg.PprofAddr != "" {
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", promhttp.Handler())
 		mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200); _, _ = w.Write([]byte("ok")) })
 		mux.HandleFunc("/readyz", b.readyzHandler)
-		go func() { _ = http.ListenAndServe(b.cfg.PprofAddr, mux) }()
+		srv := &http.Server{Addr: b.cfg.PprofAddr, Handler: mux}
+		b.metricsSrv = srv
+		go func() {
+			_ = srv.ListenAndServe()
+		}()
 		slog.Info("metrics listening", "addr", b.cfg.PprofAddr)
+		go func() {
+			<-runCtx.Done()
+			shutCtx, shutCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer shutCancel()
+			_ = srv.Shutdown(shutCtx)
+		}()
 	}
 	if b.cluster != nil {
-		if err := b.cluster.Start(ctx); err != nil {
+		if err := b.cluster.Start(runCtx); err != nil {
 			log.Printf("cluster start failed: %v", err)
 		} else {
 			slog.Info("cluster started", "node", b.nodeID)
 		}
 	}
-	go b.sysTicker(ctx)
+	go b.sysTicker(runCtx)
 	if b.cfg.ACLFile != "" {
-		go b.watchACL(ctx)
+		go b.watchACL(runCtx)
+	}
+	return runCtx, nil
+}
+
+func (b *Broker) Start(ctx context.Context) error {
+	runCtx, err := b.initStart(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		b.runMu.Lock()
+		b.running = false
+		b.runMu.Unlock()
+	}()
+
+	needTCP := b.cfg.TCPAddr != "" || b.customListener != nil
+	needWS := b.cfg.WSAddr != ""
+	if !needTCP && !needWS {
+		slog.Info("broker running in embedded mode without listeners", "node", b.nodeID)
+		<-runCtx.Done()
+		return nil
 	}
 	tlsCfg := b.cfg.TLSConfig
-	if tlsCfg == nil && b.cfg.TLSCertFile != "" {
-		if tc, err := loadTLSConfig(b.cfg.TLSCertFile, b.cfg.TLSKeyFile, b.cfg.TLSCAFile); err == nil {
-			tlsCfg = tc
-		}
-	}
 	b.listener = transport.NewListener(b.cfg.TCPAddr, tlsCfg, b.cfg.WSAddr)
+	if b.customListener != nil {
+		b.listener.SetCustomListener(b.customListener)
+	}
 	slog.Info("broker listening", "node", b.nodeID, "tcp", b.cfg.TCPAddr, "ws", b.cfg.WSAddr, "redis", b.cfg.RedisAddr, "tls", tlsCfg != nil)
-	err := b.listener.Listen(ctx, b.handleRawConn)
+	err = b.listener.Listen(runCtx, b.handleRawConn)
 	slog.Debug("listener returned", "err", err)
 	return err
+}
+
+func (b *Broker) Run(ctx context.Context) error { return b.Start(ctx) }
+
+func (b *Broker) StartAsync(ctx context.Context) error {
+	runCtx, err := b.initStart(ctx)
+	if err != nil {
+		return err
+	}
+	needTCP := b.cfg.TCPAddr != "" || b.customListener != nil
+	needWS := b.cfg.WSAddr != ""
+	if !needTCP && !needWS {
+		slog.Info("broker running in embedded mode without listeners (async)", "node", b.nodeID)
+		return nil
+	}
+	tlsCfg := b.cfg.TLSConfig
+	b.listener = transport.NewListener(b.cfg.TCPAddr, tlsCfg, b.cfg.WSAddr)
+	if b.customListener != nil {
+		b.listener.SetCustomListener(b.customListener)
+	}
+	slog.Info("broker listening (async)", "node", b.nodeID, "tcp", b.cfg.TCPAddr, "ws", b.cfg.WSAddr, "redis", b.cfg.RedisAddr, "tls", tlsCfg != nil)
+	ready := make(chan error, 1)
+	go func() {
+		err := b.listener.Listen(runCtx, b.handleRawConn)
+		slog.Debug("listener returned (async)", "err", err)
+		ready <- err
+		b.runMu.Lock()
+		b.running = false
+		b.runMu.Unlock()
+	}()
+	select {
+	case err := <-ready:
+		return err
+	case <-time.After(200 * time.Millisecond):
+		return nil
+	case <-runCtx.Done():
+		return runCtx.Err()
+	}
+}
+
+func (b *Broker) Stop(ctx context.Context) error {
+	b.runMu.Lock()
+	wasRunning := b.running
+	b.runMu.Unlock()
+	if b.cancel != nil {
+		b.cancel()
+	}
+	if b.listener != nil {
+		_ = b.listener.Close()
+	}
+	if b.metricsSrv != nil {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = b.metricsSrv.Shutdown(shutCtx)
+	}
+	if b.cluster != nil {
+		b.cluster.Stop()
+	}
+	var err error
+	if wasRunning {
+		err = b.Shutdown(ctx)
+	}
+	b.runMu.Lock()
+	b.running = false
+	b.runMu.Unlock()
+	return err
+}
+
+func (b *Broker) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return b.Stop(ctx)
+}
+
+func (b *Broker) IsRunning() bool {
+	b.runMu.Lock()
+	defer b.runMu.Unlock()
+	return b.running
+}
+
+func (b *Broker) Addr() string {
+	if b.listener != nil {
+		return b.listener.Addr()
+	}
+	if b.customListener != nil {
+		return b.customListener.Addr().String()
+	}
+	return b.cfg.TCPAddr
 }
 
 func (b *Broker) Shutdown(ctx context.Context) error {
@@ -434,8 +641,12 @@ func (b *Broker) Shutdown(ctx context.Context) error {
 		_ = b.sendPacket(conn, disc)
 		b.debugPacket("send", conn.ClientID(), disc)
 	}
+	drain := 5 * time.Second
+	if len(conns) == 0 {
+		drain = 500 * time.Millisecond
+	}
 	select {
-	case <-time.After(5 * time.Second):
+	case <-time.After(drain):
 	case <-ctx.Done():
 		return ctx.Err()
 	}

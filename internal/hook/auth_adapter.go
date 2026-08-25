@@ -49,8 +49,7 @@ func (x *AuthAdapter) OnSubscribe(clientID, filter string, _ byte) error {
 	return nil
 }
 
-func (x *AuthAdapter) OnConnect(string) error              { return nil }
-func (x *AuthAdapter) OnUnsubscribe(string, string) error { return nil }
-func (x *AuthAdapter) OnDisconnect(string, bool)           {}
-func (x *AuthAdapter) OnPacket(string, string, *codec.Packet, string) {
-}
+func (x *AuthAdapter) OnConnect(string) error                         { return nil }
+func (x *AuthAdapter) OnUnsubscribe(string, string) error             { return nil }
+func (x *AuthAdapter) OnDisconnect(string, bool)                      {}
+func (x *AuthAdapter) OnPacket(string, string, *codec.Packet, string) {}

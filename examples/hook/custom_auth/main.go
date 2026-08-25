@@ -17,10 +17,7 @@ import (
 // ---------------------------------------------------------------------------
 
 type DBAuthenticator struct {
-	// demo: 内存用户表，生产换成 DB/Redis
 	users map[string]string // username -> password
-	// topic 授权规则：tenant -> allowed prefix
-	tenantPrefix map[string]string
 }
 
 func (d *DBAuthenticator) Authenticate(clientID, username string, password []byte) bool {

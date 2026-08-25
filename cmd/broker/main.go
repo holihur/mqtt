@@ -52,16 +52,12 @@ func main() {
 	)
 	flag.Parse()
 	logger.Init(*logLevel)
-	slog.Info("starting", "log_level", *logLevel)
+	slog.Info("starting", "mode", "standalone", "log_level", *logLevel)
 
 	var store persistence.Store
 	var redisCli redis.UniversalClient
 	if *redisAddr != "" {
-		addrs := []string{*redisAddr}
-		if len(*redisAddr) > 0 {
-			// support comma-separated for cluster/sentinel
-			addrs = splitAddrs(*redisAddr)
-		}
+		addrs := splitAddrs(*redisAddr)
 		cli := redis.NewUniversalClient(&redis.UniversalOptions{Addrs: addrs})
 		pingCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		pingErr := cli.Ping(pingCtx).Err()
@@ -95,7 +91,11 @@ func main() {
 		TLSKeyFile:     *tlsKey,
 		TLSCAFile:      *tlsCA,
 	}
-	b := broker.New(cfg, store, nil)
+	b, err := broker.NewWithOptions(cfg, broker.WithStore(store))
+	if err != nil {
+		slog.Error("broker init failed", "err", err)
+		os.Exit(1)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -104,11 +104,11 @@ func main() {
 		ch := make(chan os.Signal, 1)
 		signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 		<-ch
-		slog.Info("shutting down")
+		slog.Info("shutting down (standalone)")
 		shutCtx, shutCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer shutCancel()
-		if err := b.Shutdown(shutCtx); err != nil {
-			slog.Warn("shutdown", "err", err)
+		if err := b.Stop(shutCtx); err != nil {
+			slog.Warn("stop", "err", err)
 		}
 		cancel()
 		sig2 := make(chan os.Signal, 1)
@@ -127,6 +127,7 @@ func main() {
 		}
 	}()
 
+	// 独立运行：阻塞式 Start，由信号触发 Stop
 	if err := b.Start(ctx); err != nil {
 		slog.Error("broker error", "err", err)
 		os.Exit(1)

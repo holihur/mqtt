@@ -28,14 +28,14 @@ type Hook interface {
 // BaseHook provides no-op defaults so implementors can override selectively.
 type BaseHook struct{}
 
-func (BaseHook) ID() string                                             { return "base" }
-func (BaseHook) OnAuth(string, string, []byte) error                    { return nil }
-func (BaseHook) OnConnect(string) error                                 { return nil }
-func (BaseHook) OnPublish(string, string, []byte, byte, bool) error     { return nil }
-func (BaseHook) OnSubscribe(string, string, byte) error                 { return nil }
-func (BaseHook) OnUnsubscribe(string, string) error                     { return nil }
-func (BaseHook) OnDisconnect(string, bool)                               {}
-func (BaseHook) OnPacket(string, string, *codec.Packet, string)         {}
+func (BaseHook) ID() string                                         { return "base" }
+func (BaseHook) OnAuth(string, string, []byte) error                { return nil }
+func (BaseHook) OnConnect(string) error                             { return nil }
+func (BaseHook) OnPublish(string, string, []byte, byte, bool) error { return nil }
+func (BaseHook) OnSubscribe(string, string, byte) error             { return nil }
+func (BaseHook) OnUnsubscribe(string, string) error                 { return nil }
+func (BaseHook) OnDisconnect(string, bool)                          {}
+func (BaseHook) OnPacket(string, string, *codec.Packet, string)     {}
 
 // Manager holds ordered hooks and dispatches calls.
 // It is safe for concurrent Register and Exec.

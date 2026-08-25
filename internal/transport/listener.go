@@ -12,35 +12,76 @@ import (
 )
 
 type Listener struct {
-	addr   string
-	tlsCfg *tls.Config
-	wsAddr string
-	ln     net.Listener
+	addr           string
+	tlsCfg         *tls.Config
+	wsAddr         string
+	ln             net.Listener
+	customListener net.Listener
+	wsSrv          *http.Server
 }
 
 func NewListener(addr string, tlsCfg *tls.Config, wsAddr string) *Listener {
 	return &Listener{addr: addr, tlsCfg: tlsCfg, wsAddr: wsAddr}
 }
 
-func (l *Listener) Listen(ctx context.Context, handle func(net.Conn)) error {
-	var err error
-	if l.tlsCfg != nil {
-		l.ln, err = tls.Listen("tcp", l.addr, l.tlsCfg)
-	} else {
-		l.ln, err = net.Listen("tcp", l.addr)
+func (l *Listener) SetCustomListener(ln net.Listener) { l.customListener = ln }
+
+func (l *Listener) Addr() string {
+	if l.ln != nil {
+		return l.ln.Addr().String()
 	}
-	if err != nil {
-		return fmt.Errorf("tcp listen %s: %w", l.addr, err)
+	if l.customListener != nil {
+		return l.customListener.Addr().String()
+	}
+	return l.addr
+}
+
+func (l *Listener) Close() error {
+	if l.ln != nil {
+		_ = l.ln.Close()
+	}
+	if l.wsSrv != nil {
+		_ = l.wsSrv.Close()
+	}
+	return nil
+}
+
+func (l *Listener) Listen(ctx context.Context, handle func(net.Conn)) error {
+	hasTCP := l.addr != "" || l.customListener != nil
+	hasWS := l.wsAddr != ""
+
+	if !hasTCP && !hasWS {
+		<-ctx.Done()
+		return nil
+	}
+
+	if hasWS {
+		go l.serveWS(ctx, handle)
+	}
+
+	if !hasTCP {
+		<-ctx.Done()
+		return nil
+	}
+
+	var err error
+	if l.customListener != nil {
+		l.ln = l.customListener
+	} else {
+		if l.tlsCfg != nil {
+			l.ln, err = tls.Listen("tcp", l.addr, l.tlsCfg)
+		} else {
+			l.ln, err = net.Listen("tcp", l.addr)
+		}
+		if err != nil {
+			return fmt.Errorf("tcp listen %s: %w", l.addr, err)
+		}
 	}
 	defer l.ln.Close()
 	go func() {
 		<-ctx.Done()
 		l.ln.Close()
 	}()
-
-	if l.wsAddr != "" {
-		go l.serveWS(ctx, handle)
-	}
 
 	sem := make(chan struct{}, 20000)
 	for {
@@ -95,6 +136,7 @@ func (l *Listener) serveWS(ctx context.Context, handle func(net.Conn)) {
 		handle(conn)
 	})
 	srv := &http.Server{Addr: l.wsAddr, Handler: mux}
+	l.wsSrv = srv
 	go func() {
 		<-ctx.Done()
 		srv.Close()
