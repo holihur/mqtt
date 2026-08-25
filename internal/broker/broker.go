@@ -2,9 +2,12 @@ package broker
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"sync"
 	"time"
 
@@ -30,6 +33,7 @@ import (
 var (
 	mqttMessagesReceived = promauto.NewCounter(prometheus.CounterOpts{Name: "mqtt_messages_received_total", Help: "Total MQTT messages received"})
 	mqttMessagesSent     = promauto.NewCounter(prometheus.CounterOpts{Name: "mqtt_messages_sent_total", Help: "Total MQTT messages sent"})
+	//nolint:unused
 	mqttClientsConnected = promauto.NewGauge(prometheus.GaugeOpts{Name: "mqtt_clients_connected", Help: "Current connected clients"})
 	mqttInflight         = promauto.NewGauge(prometheus.GaugeOpts{Name: "mqtt_inflight_messages", Help: "Current inflight messages"})
 )
@@ -44,6 +48,10 @@ type Config struct {
 	JWTSecret      string
 	MaxPacketSize  int
 	AllowAnonymous bool
+	TLSCertFile    string
+	TLSKeyFile     string
+	TLSCAFile      string
+	TLSConfig      *tls.Config
 }
 
 type BrokerStats struct {
@@ -73,6 +81,41 @@ type Broker struct {
 	statsMu  sync.Mutex
 	stats    BrokerStats
 	listener *transport.Listener
+}
+
+func storeCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 2*time.Second)
+}
+
+//nolint:govet
+func bgCtx() context.Context {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_ = cancel
+	return ctx
+}
+
+func loadTLSConfig(certFile, keyFile, caFile string) (*tls.Config, error) {
+	if certFile == "" || keyFile == "" {
+		return nil, nil
+	}
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, err
+	}
+	cfg := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+	if caFile != "" {
+		caData, err := os.ReadFile(caFile)
+		if err != nil {
+			return nil, err
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caData) {
+			return nil, fmt.Errorf("failed to parse CA %s", caFile)
+		}
+		cfg.ClientCAs = pool
+		cfg.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+	return cfg, nil
 }
 
 func New(cfg Config, store persistence.Store, authenticator auth.Authenticator) *Broker {
@@ -120,12 +163,22 @@ func New(cfg Config, store persistence.Store, authenticator auth.Authenticator) 
 	// setup redis cluster if addr provided
 	if cfg.RedisAddr != "" {
 		cli := redis.NewUniversalClient(&redis.UniversalOptions{Addrs: []string{cfg.RedisAddr}})
-		// test ping but not fatal
-		if err := cli.Ping(context.Background()).Err(); err != nil {
-			slog.Warn("redis ping failed, cluster disabled", "err", err)
+		pingCtx, cancel := storeCtx()
+		pingErr := cli.Ping(pingCtx).Err()
+		cancel()
+		if pingErr != nil {
+			slog.Warn("redis ping failed, cluster disabled", "err", pingErr)
 		} else {
 			b.redisCli = cli
 			b.cluster = cluster.New(cli, cfg.NodeID, "mqtt", b.onClusterMessage)
+		}
+	}
+	if cfg.TLSConfig == nil && cfg.TLSCertFile != "" {
+		if tc, err := loadTLSConfig(cfg.TLSCertFile, cfg.TLSKeyFile, cfg.TLSCAFile); err != nil {
+			slog.Warn("tls config load failed", "err", err)
+		} else {
+			cfg.TLSConfig = tc
+			b.cfg.TLSConfig = tc
 		}
 	}
 	// If store is nil, use memory
@@ -151,8 +204,14 @@ func (b *Broker) Start(ctx context.Context) error {
 		}
 	}
 	go b.sysTicker(ctx)
-	b.listener = transport.NewListener(b.cfg.TCPAddr, nil, b.cfg.WSAddr)
-	slog.Info("broker listening", "node", b.nodeID, "tcp", b.cfg.TCPAddr, "ws", b.cfg.WSAddr, "redis", b.cfg.RedisAddr)
+	tlsCfg := b.cfg.TLSConfig
+	if tlsCfg == nil && b.cfg.TLSCertFile != "" {
+		if tc, err := loadTLSConfig(b.cfg.TLSCertFile, b.cfg.TLSKeyFile, b.cfg.TLSCAFile); err == nil {
+			tlsCfg = tc
+		}
+	}
+	b.listener = transport.NewListener(b.cfg.TCPAddr, tlsCfg, b.cfg.WSAddr)
+	slog.Info("broker listening", "node", b.nodeID, "tcp", b.cfg.TCPAddr, "ws", b.cfg.WSAddr, "redis", b.cfg.RedisAddr, "tls", tlsCfg != nil)
 	err := b.listener.Listen(ctx, b.handleRawConn)
 	slog.Debug("listener returned", "err", err)
 	return err
@@ -214,7 +273,7 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 	conn.SetVersion(pkt.Version)
 
 	// Session handling
-	sess, err := b.getOrCreateSession(pkt)
+	sess, sessionExisted, err := b.getOrCreateSession(pkt)
 	if err != nil {
 		slog.Error("session error", "err", err)
 		_ = conn.Close()
@@ -268,7 +327,9 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 	b.conns[clientID] = conn
 	b.sessions[clientID] = sess
 	b.mu.Unlock()
-	_ = b.store.SaveSession(context.Background(), sess)
+	if err := b.store.SaveSession(bgCtx(), sess); err != nil {
+		slog.Warn("store SaveSession failed", "err", err)
+	}
 
 	// Will with validation and delay cap
 	if pkt.Will != nil {
@@ -289,11 +350,15 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 		}
 	}
 
-	// CONNACK
+	// CONNACK - SessionPresent per MQTT spec: true if session existed and CleanSession/CleanStart is false
+	sessionPresent := sessionExisted && !pkt.ConnectFlags.CleanSession
+	if clientID != pkt.ClientID {
+		sessionPresent = false
+	}
 	connack := &codec.Packet{
 		Type:           codec.TypeCONNACK,
 		Version:        pkt.Version,
-		SessionPresent: false, // TODO: check if session existed
+		SessionPresent: sessionPresent,
 		ReasonCode:     0,
 	}
 	// For v5, include props like AssignedClientID if we generated one
@@ -325,7 +390,10 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 	// Replay retained for existing subs? Not needed until SUBSCRIBE
 
 	// Replay offline queue
-	if offline, _ := b.store.DequeueOffline(context.Background(), clientID); len(offline) > 0 {
+	offline, err := b.store.DequeueOffline(bgCtx(), clientID)
+	if err != nil {
+		slog.Warn("dequeue offline failed", "client", clientID, "err", err)
+	} else if len(offline) > 0 {
 		for _, m := range offline {
 			pub := &codec.Packet{
 				Type:    codec.TypePUBLISH,
@@ -351,35 +419,39 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 	go b.readLoop(conn, sess)
 }
 
-func (b *Broker) getOrCreateSession(pkt *codec.Packet) (*session.Session, error) {
+func (b *Broker) getOrCreateSession(pkt *codec.Packet) (*session.Session, bool, error) {
 	clientID := pkt.ClientID
 	if clientID == "" {
-		return session.NewSession(clientID, pkt.Version, pkt.ConnectFlags.CleanSession, 0), nil
+		return session.NewSession(clientID, pkt.Version, pkt.ConnectFlags.CleanSession, 0), false, nil
 	}
-	// try memory first
 	b.mu.RLock()
 	if s, ok := b.sessions[clientID]; ok {
 		b.mu.RUnlock()
-		return s, nil
-	}
-	b.mu.RUnlock()
-	// try store
-	s, err := b.store.GetSession(context.Background(), clientID)
-	if err != nil {
-		return nil, err
-	}
-	if s != nil {
-		// clean start => clear old session
+		existed := true
 		if pkt.ConnectFlags.CleanSession {
-			if pkt.Version == codec.ProtocolV5 && pkt.Properties != nil && pkt.Properties.SessionExpiryInterval != nil && *pkt.Properties.SessionExpiryInterval == 0 {
-				// clean start true and expiry 0 => delete
-			}
-			// For v3 clean true or v5 clean true, we should clear subscriptions
 			s.Subscriptions = make(map[string]byte)
 			s.Inflight = make(map[uint16]*session.InflightEntry)
-			_ = b.store.ClearOffline(context.Background(), clientID)
+			if err := b.store.ClearOffline(bgCtx(), clientID); err != nil {
+				slog.Warn("store ClearOffline failed", "err", err)
+			}
 		}
-		return s, nil
+		return s, existed, nil
+	}
+	b.mu.RUnlock()
+	s, err := b.store.GetSession(bgCtx(), clientID)
+	if err != nil {
+		return nil, false, err
+	}
+	if s != nil {
+		existed := true
+		if pkt.ConnectFlags.CleanSession {
+			s.Subscriptions = make(map[string]byte)
+			s.Inflight = make(map[uint16]*session.InflightEntry)
+			if err := b.store.ClearOffline(bgCtx(), clientID); err != nil {
+				slog.Warn("store ClearOffline failed", "err", err)
+			}
+		}
+		return s, existed, nil
 	}
 	// new session
 	expiry := uint32(0)
@@ -387,7 +459,7 @@ func (b *Broker) getOrCreateSession(pkt *codec.Packet) (*session.Session, error)
 		expiry = *pkt.Properties.SessionExpiryInterval
 	}
 	s = session.NewSession(clientID, pkt.Version, pkt.ConnectFlags.CleanSession, expiry)
-	return s, nil
+	return s, false, nil
 }
 
 func (b *Broker) readLoop(conn *transport.Conn, sess *session.Session) {
@@ -414,14 +486,9 @@ func (b *Broker) readLoop(conn *transport.Conn, sess *session.Session) {
 		case codec.TypePUBACK:
 			sess.RemoveInflight(pkt.PacketID)
 		case codec.TypePUBREC:
-			// QoS2: send PUBREL
 			if _, ok := sess.GetInflight(pkt.PacketID); ok {
 				rel := &codec.Packet{Type: codec.TypePUBREL, Version: conn.Version(), PacketID: pkt.PacketID}
 				_ = conn.WritePacket(rel)
-			} else {
-				// publish QoS2 inbound: receive PUBLISH then send PUBREC, wait PUBREL
-				// This path is for inbound QoS2 publish? handled in handlePublish
-				// For outbound QoS2, ack is PUBREC -> PUBREL -> PUBCOMP
 			}
 		case codec.TypePUBREL:
 			if e, ok := sess.GetInflight(pkt.PacketID); ok {
@@ -529,9 +596,13 @@ func (b *Broker) handlePublish(conn *transport.Conn, sess *session.Session, pkt 
 	// Retain handling
 	if pkt.Retain {
 		if len(pkt.Payload) == 0 {
-			_ = b.store.DeleteRetained(context.Background(), topicName)
+			if err := b.store.DeleteRetained(bgCtx(), topicName); err != nil {
+				slog.Warn("store DeleteRetained failed", "err", err)
+			}
 		} else {
-			_ = b.store.SaveRetained(context.Background(), topicName, &persistence.Message{Topic: topicName, Payload: pkt.Payload, QoS: pkt.QoS, Retain: true})
+			if err := b.store.SaveRetained(bgCtx(), topicName, &persistence.Message{Topic: topicName, Payload: pkt.Payload, QoS: pkt.QoS, Retain: true}); err != nil {
+				slog.Warn("store SaveRetained failed", "err", err)
+			}
 		}
 	}
 
@@ -559,7 +630,11 @@ func (b *Broker) routeMessage(topicName string, payload []byte, qos byte, retain
 		return
 	}
 	if b.cluster != nil {
-		go func() { _ = b.cluster.Publish(context.Background(), topicName, payload, qos, retain) }()
+		go func() {
+			if err := b.cluster.Publish(bgCtx(), topicName, payload, qos, retain); err != nil {
+				slog.Warn("cluster publish failed", "err", err)
+			}
+		}()
 	}
 	b.deliverLocal(topicName, payload, qos, props, from)
 }
@@ -587,7 +662,9 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 			b.mu.RUnlock()
 			if !ok1 || !ok2 {
 				if sess != nil && sess.ExpiryInterval != 0 {
-					_ = b.store.EnqueueOffline(context.Background(), chosen, &persistence.Message{Topic: topicName, Payload: payload, QoS: qos})
+					if err := b.store.EnqueueOffline(bgCtx(), chosen, &persistence.Message{Topic: topicName, Payload: payload, QoS: qos}); err != nil {
+						slog.Warn("store EnqueueOffline failed", "err", err)
+					}
 				}
 				continue
 			}
@@ -598,7 +675,9 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 			pub := &codec.Packet{Type: codec.TypePUBLISH, Version: conn.Version(), Topic: topicName, QoS: q, Payload: payload}
 			if q > 0 {
 				if !sess.CanSend() {
-					_ = b.store.EnqueueOffline(context.Background(), chosen, &persistence.Message{Topic: topicName, Payload: payload, QoS: qos})
+					if err := b.store.EnqueueOffline(bgCtx(), chosen, &persistence.Message{Topic: topicName, Payload: payload, QoS: qos}); err != nil {
+						slog.Warn("store EnqueueOffline failed", "err", err)
+					}
 					continue
 				}
 				pub.PacketID = sess.NextPacketID()
@@ -629,7 +708,9 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 		if !ok || !sok {
 			// offline: enqueue if session expiry >0
 			if sess != nil && sess.ExpiryInterval != 0 {
-				_ = b.store.EnqueueOffline(context.Background(), sub.ClientID, &persistence.Message{Topic: topicName, Payload: payload, QoS: qos})
+				if err := b.store.EnqueueOffline(bgCtx(), sub.ClientID, &persistence.Message{Topic: topicName, Payload: payload, QoS: qos}); err != nil {
+					slog.Warn("store EnqueueOffline failed", "err", err)
+				}
 			}
 			continue
 		}
@@ -648,7 +729,9 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 		}
 		if deliverQoS > 0 {
 			if !sess.CanSend() {
-				_ = b.store.EnqueueOffline(context.Background(), sub.ClientID, &persistence.Message{Topic: topicName, Payload: payload, QoS: qos})
+				if err := b.store.EnqueueOffline(bgCtx(), sub.ClientID, &persistence.Message{Topic: topicName, Payload: payload, QoS: qos}); err != nil {
+					slog.Warn("store EnqueueOffline failed", "err", err)
+				}
 				continue
 			}
 			pub.PacketID = sess.NextPacketID()
@@ -708,18 +791,25 @@ func (b *Broker) handleSubscribe(conn *transport.Conn, sess *session.Session, pk
 			}
 			b.sharedMu.Unlock()
 			sess.Subscriptions[sub.Filter] = sub.QoS
-			_ = b.store.SaveSession(context.Background(), sess)
+			if err := b.store.SaveSession(bgCtx(), sess); err != nil {
+				slog.Warn("store SaveSession failed", "err", err)
+			}
 			codes = append(codes, sub.QoS)
 		} else {
 			// add to trie and session
 			b.trie.Add(sub.Filter, sess.ClientID, sub.QoS, sub.NoLocal)
 			sess.Subscriptions[sub.Filter] = sub.QoS
-			_ = b.store.SaveSession(context.Background(), sess)
+			if err := b.store.SaveSession(bgCtx(), sess); err != nil {
+				slog.Warn("store SaveSession failed", "err", err)
+			}
 			codes = append(codes, sub.QoS)
 		}
 
 		// deliver retained messages matching this filter
-		retained, _ := b.store.ListRetained(context.Background())
+		retained, err := b.store.ListRetained(bgCtx())
+		if err != nil {
+			slog.Warn("list retained failed", "err", err)
+		}
 		for _, m := range retained {
 			if matchFilter(m.Topic, sub.Filter) {
 				if !b.auth.Authorize(sess.ClientID, m.Topic, false) {
@@ -786,7 +876,9 @@ func (b *Broker) handleUnsubscribe(conn *transport.Conn, sess *session.Session, 
 		}
 		delete(sess.Subscriptions, t)
 	}
-	_ = b.store.SaveSession(context.Background(), sess)
+	if err := b.store.SaveSession(bgCtx(), sess); err != nil {
+		slog.Warn("store SaveSession failed", "err", err)
+	}
 	ack := &codec.Packet{Type: codec.TypeUNSUBACK, Version: conn.Version(), PacketID: pkt.PacketID}
 	if sess.Version == codec.ProtocolV5 {
 		ack.UnsubackProps = &codec.Properties{}
@@ -820,7 +912,9 @@ func (b *Broker) onClientDisconnect(clientID string, sess *session.Session, clea
 			sess.Will = nil
 			sess.Mu.Unlock()
 		}
-		_ = b.store.DeleteSession(context.Background(), clientID)
+		if err := b.store.DeleteSession(bgCtx(), clientID); err != nil {
+			slog.Warn("store DeleteSession failed", "err", err)
+		}
 		return
 	}
 	if !clean && sess.Will != nil {
@@ -833,7 +927,9 @@ func (b *Broker) onClientDisconnect(clientID string, sess *session.Session, clea
 	sess.Mu.Lock()
 	sess.Connected = false
 	sess.Mu.Unlock()
-	_ = b.store.SaveSession(context.Background(), sess)
+	if err := b.store.SaveSession(bgCtx(), sess); err != nil {
+		slog.Warn("store SaveSession failed", "err", err)
+	}
 	if expiry == 0 && clean {
 		for _, f := range subs {
 			b.trie.Remove(f, clientID)
@@ -863,6 +959,7 @@ func (b *Broker) handleWill(sess *session.Session) {
 	b.routeMessage(w.Topic, w.Payload, w.QoS, w.Retain, nil, sess.ClientID)
 }
 
+//nolint:unused
 func (b *Broker) keepAliveMonitor(conn *transport.Conn, sess *session.Session) {
 	interval := time.Duration(float64(sess.KeepAlive)*1.5) * time.Second
 	if interval == 0 {

@@ -60,6 +60,7 @@ func decodeVarInt(src []byte) (int, int, error) {
 func encodeUint16(v uint16) []byte { return []byte{byte(v >> 8), byte(v)} }
 func decodeUint16(b []byte) uint16 { return uint16(b[0])<<8 | uint16(b[1]) }
 
+//nolint:unused
 func appendUint16(dst []byte, v uint16) []byte { return append(dst, byte(v>>8), byte(v)) }
 
 func encodeUint32(v uint32) []byte {
@@ -69,6 +70,7 @@ func decodeUint32(b []byte) uint32 {
 	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
 }
 
+//nolint:unused
 func appendUint32(dst []byte, v uint32) []byte {
 	return append(dst, byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
 }
@@ -78,6 +80,7 @@ func encodeString(s string) []byte {
 	return append(append([]byte{byte(len(b) >> 8), byte(len(b))}, b...), []byte{}...)
 }
 
+//nolint:unused
 func appendString(dst []byte, s string) []byte {
 	dst = append(dst, byte(len(s)>>8), byte(len(s)))
 	dst = append(dst, s...)

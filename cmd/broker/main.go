@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"mqtt/internal/broker"
 	"mqtt/internal/logger"
@@ -45,6 +46,9 @@ func main() {
 		allowAnonymous = flag.String("allow-anonymous", "false", "allow anonymous (true/false)")
 		logLevel       = flag.String("log-level", "info", "log level: debug/info/warn/error (lower more verbose)")
 		nodeID         = flag.String("node", "", "Node ID (auto if empty)")
+		tlsCert        = flag.String("tls-cert", "", "TLS cert file (empty to disable TLS)")
+		tlsKey         = flag.String("tls-key", "", "TLS key file")
+		tlsCA          = flag.String("tls-ca", "", "TLS CA file for mTLS (empty to disable client auth)")
 	)
 	flag.Parse()
 	logger.Init(*logLevel)
@@ -59,8 +63,11 @@ func main() {
 			addrs = splitAddrs(*redisAddr)
 		}
 		cli := redis.NewUniversalClient(&redis.UniversalOptions{Addrs: addrs})
-		if err := cli.Ping(context.Background()).Err(); err != nil {
-			slog.Warn("redis unavailable, falling back to memory", "addr", *redisAddr, "err", err)
+		pingCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		pingErr := cli.Ping(pingCtx).Err()
+		cancel()
+		if pingErr != nil {
+			slog.Warn("redis unavailable, falling back to memory", "addr", *redisAddr, "err", pingErr)
 			store = persistence.NewMemoryStore()
 		} else {
 			store = persistence.NewRedisStoreWithClient(cli, "mqtt")
@@ -84,6 +91,9 @@ func main() {
 		ACLFile:        *aclFile,
 		JWTSecret:      *jwtSecret,
 		AllowAnonymous: allowAnon,
+		TLSCertFile:    *tlsCert,
+		TLSKeyFile:     *tlsKey,
+		TLSCAFile:      *tlsCA,
 	}
 	b := broker.New(cfg, store, nil)
 

@@ -21,6 +21,39 @@ func putBuf(b *bytes.Buffer) {
 	}
 }
 
+var packetPool = sync.Pool{New: func() any { return &Packet{} }}
+
+func AcquirePacket() *Packet {
+	p := packetPool.Get().(*Packet)
+	*p = Packet{}
+	return p
+}
+
+func ReleasePacket(p *Packet) {
+	if p == nil {
+		return
+	}
+	// clear slices to allow GC
+	p.Payload = nil
+	p.Subscriptions = nil
+	p.Topics = nil
+	p.SubackCodes = nil
+	p.UnsubackCodes = nil
+	p.Password = nil
+	p.Will = nil
+	p.Properties = nil
+	p.ConnProperties = nil
+	p.PubProps = nil
+	p.AckProps = nil
+	p.SubProps = nil
+	p.SubackProps = nil
+	p.UnsubProps = nil
+	p.UnsubackProps = nil
+	p.DiscProps = nil
+	p.AuthProps = nil
+	packetPool.Put(p)
+}
+
 // Encode encodes packet to wire bytes (fixed header + remaining length + payload)
 func Encode(p *Packet) ([]byte, error) {
 	var vhAndPayload []byte
@@ -326,12 +359,11 @@ func decodeConnect(p *Packet, b []byte) error {
 		pos = np
 	}
 	if p.ConnectFlags.PasswordFlag {
-		pw, np, err := decodeBinary(b, pos)
+		pw, _, err := decodeBinary(b, pos)
 		if err != nil {
 			return err
 		}
 		p.Password = pw
-		pos = np
 	}
 	return nil
 }
@@ -443,18 +475,8 @@ func decodePublish(p *Packet, b []byte) error {
 	} else {
 		p.Payload = []byte{}
 	}
-	// Correction for v3 mis-parse: if p.Version==0 and we consumed 1 byte as props length 0 but payload was non-empty starting with 0x00, then first payload byte lost.
-	// We handle by checking: if p.PubProps != nil && p.Version != ProtocolV5 {
-	//   Actually we don't know version, so we fallback: if we thought it's v5 but it's actually v3, the payload first byte was eaten.
-	//   Heuristic: if the props length was 0 (so np = saved+1) and we assumed v5, then for v3 the payload should be b[saved:]
-	//   So we detect: if props length ==0 and p.Version==0, we ambiguous. Prefer to treat as v3 if payload looks not like props.
-	// For now, we leave as is and provide DecodeWithVersion for accurate path.
-	if p.PubProps != nil && len(p.PubProps.User) == 0 && p.PubProps.PayloadFormatIndicator == nil && p.PubProps.MessageExpiryInterval == nil && p.PubProps.TopicAlias == nil && p.PubProps.ResponseTopic == nil && len(p.PubProps.CorrelationData) == 0 && p.PubProps.ContentType == nil && len(p.PubProps.SubscriptionID) == 0 {
-		// Empty props (length 0) - could be v3 payload starting with 0x00 or genuine v5 empty props.
-		// If the original frame had a single 0 byte as props length, then for v3 that byte should be payload.
-		// We keep payload as b[pos:] which for empty props is correct for v5 (payload after 0). For v3, if payload actually starts with 0x00, we already consumed that 0 as props length, losing it. But that's rare.
-		// Accept.
-	}
+	// Correction for v3 mis-parse: see comments above; DecodeWithVersion provides accurate path.
+	// Empty PubProps with length 0 is treated as valid v5 empty properties (payload already at b[pos:]).
 	return nil
 }
 
@@ -545,7 +567,7 @@ func encodeSubscribe(p *Packet) []byte {
 	}
 	for _, s := range p.Subscriptions {
 		buf.Write(encodeString(s.Filter))
-		var opts byte = s.QoS & 0x03
+		opts := s.QoS & 0x03
 		if p.Version == ProtocolV5 {
 			if s.NoLocal {
 				opts |= 1 << 2

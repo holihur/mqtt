@@ -16,7 +16,6 @@ type Listener struct {
 	tlsCfg *tls.Config
 	wsAddr string
 	ln     net.Listener
-	wsLn   net.Listener
 }
 
 func NewListener(addr string, tlsCfg *tls.Config, wsAddr string) *Listener {
@@ -111,9 +110,8 @@ type wsConn struct {
 }
 
 type wsReader struct {
-	conn *websocket.Conn
-	buf  []byte
-	pos  int
+	buf []byte
+	pos int
 }
 
 func (w *wsConn) Read(b []byte) (int, error) {
@@ -125,7 +123,7 @@ func (w *wsConn) Read(b []byte) (int, error) {
 		}
 		return n, nil
 	}
-	_, data, err := w.Conn.ReadMessage()
+	_, data, err := w.ReadMessage()
 	if err != nil {
 		return 0, err
 	}
@@ -136,7 +134,7 @@ func (w *wsConn) Read(b []byte) (int, error) {
 	return n, nil
 }
 func (w *wsConn) Write(b []byte) (int, error) {
-	err := w.Conn.WriteMessage(websocket.BinaryMessage, b)
+	err := w.WriteMessage(websocket.BinaryMessage, b)
 	if err != nil {
 		return 0, err
 	}

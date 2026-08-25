@@ -77,8 +77,9 @@ func (c *Cluster) Stop() {
 	if c.cancel != nil {
 		c.cancel()
 	}
-	// remove node key
-	_ = c.cli.Del(context.Background(), c.prefix+":nodes:"+c.nodeID).Err()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = c.cli.Del(ctx, c.prefix+":nodes:"+c.nodeID).Err()
 }
 
 func (c *Cluster) heartbeatLoop(ctx context.Context) {
