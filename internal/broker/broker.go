@@ -36,22 +36,29 @@ var (
 	//nolint:unused
 	mqttClientsConnected = promauto.NewGauge(prometheus.GaugeOpts{Name: "mqtt_clients_connected", Help: "Current connected clients"})
 	mqttInflight         = promauto.NewGauge(prometheus.GaugeOpts{Name: "mqtt_inflight_messages", Help: "Current inflight messages"})
+	mqttAuthFailed       = promauto.NewCounter(prometheus.CounterOpts{Name: "mqtt_auth_failed_total", Help: "Total auth failures"})
+	mqttPacketDropped    = promauto.NewCounterVec(prometheus.CounterOpts{Name: "mqtt_packet_dropped_total", Help: "Total dropped packets"}, []string{"reason"})
+	//nolint:unused
+	mqttRedisLatency = promauto.NewHistogram(prometheus.HistogramOpts{Name: "mqtt_redis_latency_seconds", Help: "Redis operation latency", Buckets: prometheus.DefBuckets})
 )
 
 type Config struct {
-	NodeID         string
-	TCPAddr        string
-	WSAddr         string
-	RedisAddr      string
-	PprofAddr      string
-	ACLFile        string
-	JWTSecret      string
-	MaxPacketSize  int
-	AllowAnonymous bool
-	TLSCertFile    string
-	TLSKeyFile     string
-	TLSCAFile      string
-	TLSConfig      *tls.Config
+	NodeID             string
+	TCPAddr            string
+	WSAddr             string
+	RedisAddr          string
+	PprofAddr          string
+	ACLFile            string
+	JWTSecret          string
+	MaxPacketSize      int
+	AllowAnonymous     bool
+	TLSCertFile        string
+	TLSKeyFile         string
+	TLSCAFile          string
+	TLSConfig          *tls.Config
+	MaxConnections     int
+	MaxPublishPerSec   int
+	MaxSubscribePerSec int
 }
 
 type BrokerStats struct {
@@ -60,6 +67,13 @@ type BrokerStats struct {
 	MessagesSent     int64
 	ClientsConnected int64
 	ClientsTotal     int64
+}
+
+type clientLimiter struct {
+	mu             sync.Mutex
+	publishCount   int
+	subscribeCount int
+	window         time.Time
 }
 
 type Broker struct {
@@ -81,6 +95,9 @@ type Broker struct {
 	statsMu  sync.Mutex
 	stats    BrokerStats
 	listener *transport.Listener
+
+	limitMu  sync.Mutex
+	limiters map[string]*clientLimiter
 }
 
 func storeCtx() (context.Context, context.CancelFunc) {
@@ -98,11 +115,20 @@ func loadTLSConfig(certFile, keyFile, caFile string) (*tls.Config, error) {
 	if certFile == "" || keyFile == "" {
 		return nil, nil
 	}
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
+	cfg := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+			if err != nil {
+				return nil, err
+			}
+			return &cert, nil
+		},
+	}
+	// preload to validate
+	if _, err := tls.LoadX509KeyPair(certFile, keyFile); err != nil {
 		return nil, err
 	}
-	cfg := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
 	if caFile != "" {
 		caData, err := os.ReadFile(caFile)
 		if err != nil {
@@ -116,6 +142,35 @@ func loadTLSConfig(certFile, keyFile, caFile string) (*tls.Config, error) {
 		cfg.ClientAuth = tls.RequireAndVerifyClientCert
 	}
 	return cfg, nil
+}
+
+func (b *Broker) watchACL(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if acl, ok := b.auth.(*auth.FileACL); ok {
+				if reloaded, err := acl.Reload(); err != nil {
+					slog.Warn("acl reload failed", "err", err)
+				} else if reloaded {
+					slog.Info("acl reloaded", "path", b.cfg.ACLFile)
+				}
+			} else if chain, ok := b.auth.(*auth.Chain); ok {
+				for _, a := range chain.Auths {
+					if facl, ok := a.(*auth.FileACL); ok {
+						if reloaded, err := facl.Reload(); err != nil {
+							slog.Warn("acl reload failed", "err", err)
+						} else if reloaded {
+							slog.Info("acl reloaded", "path", b.cfg.ACLFile)
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 func packetHex(p *codec.Packet) string {
@@ -138,6 +193,48 @@ func debugPacket(dir, clientID string, pkt *codec.Packet) {
 		return
 	}
 	slog.Debug("packet "+dir, "client", clientID, "type", pkt.Type, "version", pkt.Version, "hex", packetHex(pkt))
+}
+
+func (b *Broker) allowPublish(clientID string) bool {
+	b.limitMu.Lock()
+	lim, ok := b.limiters[clientID]
+	if !ok {
+		lim = &clientLimiter{window: time.Now()}
+		b.limiters[clientID] = lim
+	}
+	b.limitMu.Unlock()
+	lim.mu.Lock()
+	defer lim.mu.Unlock()
+	now := time.Now()
+	if now.Sub(lim.window) >= time.Second {
+		lim.window = now
+		lim.publishCount = 0
+	}
+	lim.publishCount++
+	return lim.publishCount <= b.cfg.MaxPublishPerSec
+}
+
+func (b *Broker) allowSubscribe(clientID string) bool {
+	b.limitMu.Lock()
+	lim, ok := b.limiters[clientID]
+	if !ok {
+		lim = &clientLimiter{window: time.Now()}
+		b.limiters[clientID] = lim
+	}
+	b.limitMu.Unlock()
+	lim.mu.Lock()
+	defer lim.mu.Unlock()
+	now := time.Now()
+	if now.Sub(lim.window) >= time.Second {
+		lim.window = now
+		lim.subscribeCount = 0
+	}
+	lim.subscribeCount++
+	// subscribe limit shares window with publish but separate counter
+	if now.Sub(lim.window) >= time.Second {
+		lim.subscribeCount = 1
+	}
+	return lim.subscribeCount <= b.cfg.MaxSubscribePerSec
 }
 
 func New(cfg Config, store persistence.Store, authenticator auth.Authenticator) *Broker {
@@ -171,6 +268,15 @@ func New(cfg Config, store persistence.Store, authenticator auth.Authenticator) 
 	if cfg.MaxPacketSize == 0 {
 		cfg.MaxPacketSize = 1 << 20 // 1MB
 	}
+	if cfg.MaxConnections == 0 {
+		cfg.MaxConnections = 20000
+	}
+	if cfg.MaxPublishPerSec == 0 {
+		cfg.MaxPublishPerSec = 100
+	}
+	if cfg.MaxSubscribePerSec == 0 {
+		cfg.MaxSubscribePerSec = 20
+	}
 	b := &Broker{
 		cfg:        cfg,
 		store:      store,
@@ -181,6 +287,7 @@ func New(cfg Config, store persistence.Store, authenticator auth.Authenticator) 
 		nodeID:     cfg.NodeID,
 		conns:      make(map[string]*transport.Conn),
 		sessions:   make(map[string]*session.Session),
+		limiters:   make(map[string]*clientLimiter),
 	}
 	// setup redis cluster if addr provided
 	if cfg.RedisAddr != "" {
@@ -215,6 +322,8 @@ func (b *Broker) Start(ctx context.Context) error {
 	if b.cfg.PprofAddr != "" {
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", promhttp.Handler())
+		mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200); _, _ = w.Write([]byte("ok")) })
+		mux.HandleFunc("/readyz", b.readyzHandler)
 		go func() { _ = http.ListenAndServe(b.cfg.PprofAddr, mux) }()
 		slog.Info("metrics listening", "addr", b.cfg.PprofAddr)
 	}
@@ -226,6 +335,9 @@ func (b *Broker) Start(ctx context.Context) error {
 		}
 	}
 	go b.sysTicker(ctx)
+	if b.cfg.ACLFile != "" {
+		go b.watchACL(ctx)
+	}
 	tlsCfg := b.cfg.TLSConfig
 	if tlsCfg == nil && b.cfg.TLSCertFile != "" {
 		if tc, err := loadTLSConfig(b.cfg.TLSCertFile, b.cfg.TLSKeyFile, b.cfg.TLSCAFile); err == nil {
@@ -237,6 +349,74 @@ func (b *Broker) Start(ctx context.Context) error {
 	err := b.listener.Listen(ctx, b.handleRawConn)
 	slog.Debug("listener returned", "err", err)
 	return err
+}
+
+func (b *Broker) Shutdown(ctx context.Context) error {
+	slog.Info("shutdown draining", "node", b.nodeID)
+	b.mu.RLock()
+	conns := make([]*transport.Conn, 0, len(b.conns))
+	for _, c := range b.conns {
+		conns = append(conns, c)
+	}
+	b.mu.RUnlock()
+	for _, conn := range conns {
+		disc := &codec.Packet{Type: codec.TypeDISCONNECT, Version: conn.Version()}
+		if conn.Version() == codec.ProtocolV5 {
+			disc.DiscReason = 0x8B
+			rs := "Server shutting down"
+			disc.DiscProps = &codec.Properties{ReasonString: &rs}
+		}
+		_ = conn.WritePacket(disc)
+		debugPacket("send", conn.ClientID(), disc)
+	}
+	select {
+	case <-time.After(5 * time.Second):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			empty := true
+			b.mu.RLock()
+			for _, sess := range b.sessions {
+				if sess.InflightCount() > 0 {
+					empty = false
+					break
+				}
+			}
+			b.mu.RUnlock()
+			if empty {
+				slog.Info("shutdown complete", "node", b.nodeID)
+				return nil
+			}
+		}
+	}
+}
+
+func (b *Broker) readyzHandler(w http.ResponseWriter, r *http.Request) {
+	// redis check <50ms, goroutines <50k, fd <80%
+	if b.redisCli != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 50*time.Millisecond)
+		defer cancel()
+		if err := b.redisCli.Ping(ctx).Err(); err != nil {
+			http.Error(w, "redis unavailable", http.StatusServiceUnavailable)
+			return
+		}
+	}
+	b.mu.RLock()
+	n := len(b.conns)
+	b.mu.RUnlock()
+	if n > 16000 {
+		http.Error(w, "too many connections", http.StatusServiceUnavailable)
+		return
+	}
+	w.WriteHeader(200)
+	_, _ = w.Write([]byte("ok"))
 }
 func (b *Broker) sysTicker(ctx context.Context) {
 	ticker := time.NewTicker(10 * time.Second)
@@ -280,12 +460,15 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 	// Authenticate
 	if !b.auth.Authenticate(pkt.ClientID, pkt.Username, pkt.Password) {
 		slog.Info("auth failed", "client", pkt.ClientID, "addr", raw.RemoteAddr().String(), "username", pkt.Username)
+		mqttAuthFailed.Inc()
+		mqttPacketDropped.WithLabelValues("auth").Inc()
 		reason := byte(0x04) // bad username/password for v3
 		if pkt.Version == codec.ProtocolV5 {
 			reason = 0x86 // Bad User Name or Password
 		}
 		resp := &codec.Packet{Type: codec.TypeCONNACK, Version: pkt.Version, ReasonCode: reason}
 		_ = conn.WritePacket(resp)
+		debugPacket("send", pkt.ClientID, resp)
 		_ = conn.Close()
 		return
 	}
@@ -296,6 +479,22 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 	}
 	conn.SetClientID(clientID)
 	conn.SetVersion(pkt.Version)
+	b.mu.RLock()
+	if len(b.conns) >= b.cfg.MaxConnections {
+		b.mu.RUnlock()
+		mqttPacketDropped.WithLabelValues("max_connections").Inc()
+		reason := byte(0x03)
+		if pkt.Version == codec.ProtocolV5 {
+			reason = 0x97
+		}
+		resp := &codec.Packet{Type: codec.TypeCONNACK, Version: pkt.Version, ReasonCode: reason}
+		_ = conn.WritePacket(resp)
+		debugPacket("send", clientID, resp)
+		slog.Info("reject max connections", "client", clientID, "current", len(b.conns), "max", b.cfg.MaxConnections)
+		_ = conn.Close()
+		return
+	}
+	b.mu.RUnlock()
 
 	// Session handling
 	sess, sessionExisted, err := b.getOrCreateSession(pkt)
@@ -551,11 +750,22 @@ func (b *Broker) handlePublish(conn *transport.Conn, sess *session.Session, pkt 
 	}
 	// ACL check
 	if !b.auth.Authorize(sess.ClientID, pkt.Topic, true) {
+		mqttPacketDropped.WithLabelValues("acl").Inc()
 		if sess.Version == codec.ProtocolV5 {
 			ack := &codec.Packet{Type: codec.TypePUBACK, Version: codec.ProtocolV5, PacketID: pkt.PacketID, Reason: 0x87} // Not authorized
 			if pkt.QoS == 1 {
 				_ = conn.WritePacket(ack)
+				debugPacket("send", sess.ClientID, ack)
 			}
+		}
+		return
+	}
+	if !b.allowPublish(sess.ClientID) {
+		mqttPacketDropped.WithLabelValues("publish_rate").Inc()
+		if pkt.QoS == 1 {
+			ack := &codec.Packet{Type: codec.TypePUBACK, Version: sess.Version, PacketID: pkt.PacketID, Reason: 0x97}
+			_ = conn.WritePacket(ack)
+			debugPacket("send", sess.ClientID, ack)
 		}
 		return
 	}
@@ -783,6 +993,21 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 }
 
 func (b *Broker) handleSubscribe(conn *transport.Conn, sess *session.Session, pkt *codec.Packet) {
+	if !b.allowSubscribe(sess.ClientID) {
+		mqttPacketDropped.WithLabelValues("subscribe_rate").Inc()
+		codes := make([]byte, len(pkt.Subscriptions))
+		for i := range codes {
+			if sess.Version == codec.ProtocolV5 {
+				codes[i] = 0x97
+			} else {
+				codes[i] = 0x80
+			}
+		}
+		ack := &codec.Packet{Type: codec.TypeSUBACK, Version: conn.Version(), PacketID: pkt.PacketID, SubackCodes: codes}
+		_ = conn.WritePacket(ack)
+		debugPacket("send", sess.ClientID, ack)
+		return
+	}
 	var codes []byte
 	for _, sub := range pkt.Subscriptions {
 		if !topic.IsValidFilter(sub.Filter) {

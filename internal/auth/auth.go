@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -98,7 +99,10 @@ func (j *JWTAuth) Authenticate(clientID, username string, password []byte) bool 
 
 type FileACL struct {
 	AllowAll
+	mu    sync.RWMutex
 	rules []aclRule
+	path  string
+	mtime time.Time
 }
 
 type aclRule struct {
@@ -121,8 +125,6 @@ func NewFileACL(path string) (*FileACL, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		// format: user <username> topic <topic> <access>
-		// or: client <clientID> topic <topic> <access>
 		parts := strings.Fields(line)
 		var r aclRule
 		for i := 0; i < len(parts); i++ {
@@ -153,10 +155,45 @@ func NewFileACL(path string) (*FileACL, error) {
 			rules = append(rules, r)
 		}
 	}
-	return &FileACL{rules: rules}, sc.Err()
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	info, _ := os.Stat(path)
+	var mtime time.Time
+	if info != nil {
+		mtime = info.ModTime()
+	}
+	return &FileACL{rules: rules, path: path, mtime: mtime}, nil
+}
+
+func (f *FileACL) Reload() (bool, error) {
+	if f.path == "" {
+		return false, nil
+	}
+	info, err := os.Stat(f.path)
+	if err != nil {
+		return false, err
+	}
+	if !info.ModTime().After(f.mtime) {
+		return false, nil
+	}
+	newACL, err := NewFileACL(f.path)
+	if err != nil {
+		return false, err
+	}
+	f.mu.Lock()
+	f.rules = newACL.rules
+	f.mtime = newACL.mtime
+	n := len(f.rules)
+	f.mu.Unlock()
+	// caller logs INFO
+	_ = n
+	return true, nil
 }
 
 func (f *FileACL) Authorize(clientID, topic string, isPublish bool) bool {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
 	if len(f.rules) == 0 {
 		return true
 	}
