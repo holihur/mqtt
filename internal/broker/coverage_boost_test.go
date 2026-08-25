@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"mqtt/internal/auth"
+	"mqtt/internal/cluster"
 	"mqtt/internal/codec"
 	"mqtt/internal/hook"
 	"mqtt/internal/persistence"
@@ -478,7 +479,7 @@ func TestAllowPublishDifferentClients(t *testing.T) {
 
 func TestPublishSysPrefix(t *testing.T) {
 	addr := "127.0.0.1:13001"
-	b := newTCPBroker(t, addr)
+	_ = newTCPBroker(t, addr)
 	time.Sleep(200 * time.Millisecond)
 
 	conn := connectClient(t, addr, "pub-sys")
@@ -505,6 +506,7 @@ func TestPublishSysPrefix(t *testing.T) {
 func TestPublishRetainDelete(t *testing.T) {
 	addr := "127.0.0.1:13002"
 	b := newTCPBroker(t, addr)
+	_ = b
 	time.Sleep(200 * time.Millisecond)
 
 	conn := connectClient(t, addr, "pub-retain-del")
@@ -533,6 +535,7 @@ func TestPublishRetainDelete(t *testing.T) {
 func TestPublishRetainSave(t *testing.T) {
 	addr := "127.0.0.1:13003"
 	b := newTCPBroker(t, addr)
+	_ = b
 	time.Sleep(200 * time.Millisecond)
 
 	conn := connectClient(t, addr, "pub-retain-save")
@@ -630,6 +633,7 @@ func TestPublishInvalidTopic(t *testing.T) {
 func TestPublishRateLimited(t *testing.T) {
 	addr := "127.0.0.1:13007"
 	b := newTCPBroker(t, addr)
+	_ = b
 	b.cfg.MaxPublishPerSec = 1
 	time.Sleep(200 * time.Millisecond)
 
@@ -702,6 +706,7 @@ func TestSubscribeInvalidFilter(t *testing.T) {
 func TestSubscribeRateLimited(t *testing.T) {
 	addr := "127.0.0.1:13011"
 	b := newTCPBroker(t, addr)
+	_ = b
 	b.cfg.MaxSubscribePerSec = 1
 	time.Sleep(200 * time.Millisecond)
 
@@ -745,6 +750,7 @@ func TestSubscribeRateLimited(t *testing.T) {
 func TestSubscribeV5RateLimited(t *testing.T) {
 	addr := "127.0.0.1:13012"
 	b := newTCPBroker(t, addr)
+	_ = b
 	b.cfg.MaxSubscribePerSec = 1
 	time.Sleep(200 * time.Millisecond)
 
@@ -911,6 +917,7 @@ func TestReadLoopPingReq(t *testing.T) {
 func TestReadLoopDisconnect(t *testing.T) {
 	addr := "127.0.0.1:13031"
 	b := newTCPBroker(t, addr)
+	_ = b
 	time.Sleep(200 * time.Millisecond)
 
 	conn := connectClient(t, addr, "disc-client")
@@ -1004,8 +1011,7 @@ func TestReadyzHandlerOK(t *testing.T) {
 
 func TestReadyzHandlerTooManyConns(t *testing.T) {
 	b := newEmbeddedBroker(t, "readyz-conns")
-	b.cfg.MaxConnections = 16001
-	// fill connections map
+	// fill connections map beyond limit
 	b.mu.Lock()
 	for i := 0; i < 16001; i++ {
 		b.conns[fmt.Sprintf("c%d", i)] = nil
@@ -1024,8 +1030,7 @@ func TestReadyzHandlerTooManyConns(t *testing.T) {
 
 func TestReadyzHandlerWithRedis(t *testing.T) {
 	b := newEmbeddedBroker(t, "readyz-redis")
-	// simulate redis client that fails ping
-	b.redisCli = newFakeRedisClient()
+	b.redisCli = redis.NewUniversalClient(&redis.UniversalOptions{Addrs: []string{"127.0.0.1:1"}})
 	req := httptest.NewRequest("GET", "/readyz", nil)
 	w := httptest.NewRecorder()
 	b.readyzHandler(w, req)
@@ -1047,6 +1052,7 @@ func TestShutdownNoConnections(t *testing.T) {
 func TestShutdownWithConnections(t *testing.T) {
 	addr := "127.0.0.1:13040"
 	b := newTCPBroker(t, addr)
+	_ = b
 	time.Sleep(200 * time.Millisecond)
 
 	conn := connectClient(t, addr, "shutdown-client")
@@ -1064,6 +1070,7 @@ func TestShutdownWithConnections(t *testing.T) {
 func TestShutdownV5WithConnections(t *testing.T) {
 	addr := "127.0.0.1:13041"
 	b := newTCPBroker(t, addr)
+	_ = b
 	time.Sleep(200 * time.Millisecond)
 
 	conn := connectClientV5(t, addr, "shutdown-v5")
@@ -1362,7 +1369,7 @@ func TestOnClientDisconnectPersistentSession(t *testing.T) {
 
 func TestOnClientDisconnectWithWill(t *testing.T) {
 	addr := "127.0.0.1:13050"
-	b := newTCPBroker(t, addr)
+	_ = newTCPBroker(t, addr)
 	time.Sleep(200 * time.Millisecond)
 
 	// subscriber
@@ -1468,7 +1475,7 @@ func TestNewWithStoreAndAuth(t *testing.T) {
 
 func TestDeliverLocalNoLocal(t *testing.T) {
 	addr := "127.0.0.1:13060"
-	b := newTCPBroker(t, addr)
+	_ = newTCPBroker(t, addr)
 	time.Sleep(200 * time.Millisecond)
 
 	// subscriber with NoLocal
@@ -1552,6 +1559,7 @@ func TestDeliverLocalQoSDowngrade(t *testing.T) {
 func TestSharedSubOfflineEnqueue(t *testing.T) {
 	addr := "127.0.0.1:13070"
 	b := newTCPBroker(t, addr)
+	_ = b
 	time.Sleep(200 * time.Millisecond)
 
 	// connect client with persistent session, subscribe to shared topic, then disconnect
@@ -1594,6 +1602,7 @@ func TestSharedSubOfflineEnqueue(t *testing.T) {
 func TestSubscribeRetainedDelivery(t *testing.T) {
 	addr := "127.0.0.1:13080"
 	b := newTCPBroker(t, addr)
+	_ = b
 	time.Sleep(200 * time.Millisecond)
 
 	// save retained message
@@ -1773,13 +1782,13 @@ func TestSubscribeV5WithSubscriptionID(t *testing.T) {
 	subConn := connectClientV5(t, addr, "subid-sub")
 	defer subConn.Close()
 
-	subID := byte(42)
+	subID := uint32(42)
 	sub := &codec.Packet{
 		Type:    codec.TypeSUBSCRIBE,
 		Version: codec.ProtocolV5,
 		PacketID: 1,
 		Subscriptions: []codec.Subscription{{Filter: "subid/test", QoS: 0}},
-		SubProps: &codec.Properties{SubscriptionID: []byte{subID}},
+		SubProps: &codec.Properties{SubscriptionID: []uint32{uint32(subID)}},
 	}
 	data, _ := codec.Encode(sub)
 	subConn.SetDeadline(time.Now().Add(2 * time.Second))
@@ -1908,6 +1917,7 @@ func TestConnectV5AutoClientID(t *testing.T) {
 func TestMaxConnectionsRejection(t *testing.T) {
 	addr := "127.0.0.1:13120"
 	b := newTCPBroker(t, addr)
+	_ = b
 	b.cfg.MaxConnections = 1
 	time.Sleep(200 * time.Millisecond)
 
@@ -2056,6 +2066,7 @@ func TestConnectV3AutoClientID(t *testing.T) {
 func TestWillSysTopicRejected(t *testing.T) {
 	addr := "127.0.0.1:13170"
 	b := newTCPBroker(t, addr)
+	_ = b
 	time.Sleep(200 * time.Millisecond)
 
 	will := &codec.Will{Topic: "$SYS/broker/test", Payload: []byte("x"), QoS: 0}
@@ -2083,6 +2094,7 @@ func TestWillSysTopicRejected(t *testing.T) {
 func TestWillEmptyTopicRejected(t *testing.T) {
 	addr := "127.0.0.1:13171"
 	b := newTCPBroker(t, addr)
+	_ = b
 	time.Sleep(200 * time.Millisecond)
 
 	will := &codec.Will{Topic: "", Payload: []byte("x"), QoS: 0}
@@ -2110,6 +2122,7 @@ func TestWillEmptyTopicRejected(t *testing.T) {
 func TestConnectV5SessionExpiry(t *testing.T) {
 	addr := "127.0.0.1:13180"
 	b := newTCPBroker(t, addr)
+	_ = b
 	time.Sleep(200 * time.Millisecond)
 
 	exp := uint32(60)
@@ -2315,20 +2328,6 @@ func subscribeTopic(t *testing.T, conn net.Conn, filter string, qos byte) {
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	conn.Read(buf) // SUBACK
 }
-
-// fakeRedisClient for readyz test
-type fakeRedisClient struct{}
-
-func newFakeRedisClient() *fakeRedisClient { return &fakeRedisClient{} }
-
-func (f *fakeRedisClient) Ping(ctx context.Context) *redisStatusCmd {
-	return &redisStatusCmd{err: fmt.Errorf("connection refused")}
-}
-
-// minimal redis interface satisfaction
-type redisStatusCmd struct{ err error }
-
-func (c *redisStatusCmd) Err() error { return c.err }
 
 // writeTempFile writes content to a temp file and returns its path.
 func writeTempFile(t *testing.T, name string, content []byte) string {
