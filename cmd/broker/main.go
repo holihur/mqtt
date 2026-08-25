@@ -105,6 +105,11 @@ func main() {
 		signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 		<-ch
 		slog.Info("shutting down")
+		shutCtx, shutCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer shutCancel()
+		if err := b.Shutdown(shutCtx); err != nil {
+			slog.Warn("shutdown", "err", err)
+		}
 		cancel()
 		sig2 := make(chan os.Signal, 1)
 		signal.Notify(sig2, syscall.SIGINT, syscall.SIGTERM)
