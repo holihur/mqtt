@@ -16,6 +16,7 @@ type Cluster struct {
 	cli    redis.UniversalClient
 	prefix string
 	onMsg  func(msg *ClusterMessage)
+	onMeta func(msg *ClusterMeta)
 	cancel context.CancelFunc
 }
 
@@ -27,6 +28,12 @@ type ClusterMessage struct {
 	Retain  bool   `json:"retain"`
 }
 
+type ClusterMeta struct {
+	From   string `json:"from"`
+	Action string `json:"action"` // sub / unsub
+	Filter string `json:"filter"`
+}
+
 func New(cli redis.UniversalClient, nodeID, prefix string, onMsg func(*ClusterMessage)) *Cluster {
 	if prefix == "" {
 		prefix = "mqtt"
@@ -34,15 +41,17 @@ func New(cli redis.UniversalClient, nodeID, prefix string, onMsg func(*ClusterMe
 	return &Cluster{nodeID: nodeID, cli: cli, prefix: prefix, onMsg: onMsg}
 }
 
+func (c *Cluster) SetOnMeta(fn func(*ClusterMeta)) { c.onMeta = fn }
+
 func (c *Cluster) Start(ctx context.Context) error {
 	ctx2, cancel := context.WithCancel(ctx)
 	c.cancel = cancel
 
-	// node heartbeat
 	go c.heartbeatLoop(ctx2)
 
 	channel := c.prefix + ":cluster"
-	pubsub := c.cli.Subscribe(ctx2, channel)
+	metaChan := c.prefix + ":cluster:meta"
+	pubsub := c.cli.Subscribe(ctx2, channel, metaChan)
 	if _, err := pubsub.Receive(ctx2); err != nil {
 		return err
 	}
@@ -56,6 +65,19 @@ func (c *Cluster) Start(ctx context.Context) error {
 			case m, ok := <-ch:
 				if !ok {
 					return
+				}
+				if m.Channel == metaChan {
+					var meta ClusterMeta
+					if err := json.Unmarshal([]byte(m.Payload), &meta); err != nil {
+						continue
+					}
+					if meta.From == c.nodeID {
+						continue
+					}
+					if c.onMeta != nil {
+						c.onMeta(&meta)
+					}
+					continue
 				}
 				var cm ClusterMessage
 				if err := json.Unmarshal([]byte(m.Payload), &cm); err != nil {
@@ -105,6 +127,15 @@ func (c *Cluster) Publish(ctx context.Context, topic string, payload []byte, qos
 		return err
 	}
 	return c.cli.Publish(ctx, c.prefix+":cluster", data).Err()
+}
+
+func (c *Cluster) PublishMeta(ctx context.Context, action, filter string) error {
+	meta := ClusterMeta{From: c.nodeID, Action: action, Filter: filter}
+	data, err := json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+	return c.cli.Publish(ctx, c.prefix+":cluster:meta", data).Err()
 }
 
 func (c *Cluster) Nodes(ctx context.Context) ([]string, error) {

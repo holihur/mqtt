@@ -119,6 +119,13 @@ func main() {
 			os.Exit(1)
 		}()
 	}()
+	go func() {
+		ch := make(chan os.Signal, 1)
+		signal.Notify(ch, syscall.SIGHUP)
+		for range ch {
+			slog.Info("sighup reload", "acl", *aclFile)
+		}
+	}()
 
 	if err := b.Start(ctx); err != nil {
 		slog.Error("broker error", "err", err)

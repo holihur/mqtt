@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"runtime"
 	"sync"
 	"time"
 
@@ -38,8 +39,7 @@ var (
 	mqttInflight         = promauto.NewGauge(prometheus.GaugeOpts{Name: "mqtt_inflight_messages", Help: "Current inflight messages"})
 	mqttAuthFailed       = promauto.NewCounter(prometheus.CounterOpts{Name: "mqtt_auth_failed_total", Help: "Total auth failures"})
 	mqttPacketDropped    = promauto.NewCounterVec(prometheus.CounterOpts{Name: "mqtt_packet_dropped_total", Help: "Total dropped packets"}, []string{"reason"})
-	//nolint:unused
-	mqttRedisLatency = promauto.NewHistogram(prometheus.HistogramOpts{Name: "mqtt_redis_latency_seconds", Help: "Redis operation latency", Buckets: prometheus.DefBuckets})
+	mqttRedisLatency     = promauto.NewHistogram(prometheus.HistogramOpts{Name: "mqtt_redis_latency_seconds", Help: "Redis operation latency", Buckets: prometheus.DefBuckets})
 )
 
 type Config struct {
@@ -98,6 +98,9 @@ type Broker struct {
 
 	limitMu  sync.Mutex
 	limiters map[string]*clientLimiter
+
+	remoteMu    sync.RWMutex
+	remoteTries map[string]*topic.Trie // nodeID -> trie of remote subs
 }
 
 func storeCtx() (context.Context, context.CancelFunc) {
@@ -233,6 +236,50 @@ func (b *Broker) allowSubscribe(clientID string) bool {
 	return lim.subscribeCount <= b.cfg.MaxSubscribePerSec
 }
 
+func (b *Broker) hasRemoteSubscribers(topic string) bool {
+	b.remoteMu.RLock()
+	defer b.remoteMu.RUnlock()
+	if len(b.remoteTries) == 0 {
+		return true
+	}
+	for _, trie := range b.remoteTries {
+		if len(trie.Match(topic)) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *Broker) addRemoteSub(nodeID, filter string) {
+	b.remoteMu.Lock()
+	defer b.remoteMu.Unlock()
+	trie, ok := b.remoteTries[nodeID]
+	if !ok {
+		trie = topic.NewTrie()
+		b.remoteTries[nodeID] = trie
+	}
+	trie.Add(filter, nodeID, 0, false)
+}
+
+func (b *Broker) removeRemoteSub(nodeID, filter string) {
+	b.remoteMu.Lock()
+	defer b.remoteMu.Unlock()
+	if trie, ok := b.remoteTries[nodeID]; ok {
+		trie.Remove(filter, nodeID)
+	}
+}
+
+func (b *Broker) onClusterMeta(meta *cluster.ClusterMeta) {
+	switch meta.Action {
+	case "sub":
+		b.addRemoteSub(meta.From, meta.Filter)
+		slog.Debug("remote sub", "node", meta.From, "filter", meta.Filter)
+	case "unsub":
+		b.removeRemoteSub(meta.From, meta.Filter)
+		slog.Debug("remote unsub", "node", meta.From, "filter", meta.Filter)
+	}
+}
+
 func New(cfg Config, store persistence.Store, authenticator auth.Authenticator) *Broker {
 	if cfg.NodeID == "" {
 		cfg.NodeID = uuid.NewString()[:8]
@@ -274,16 +321,17 @@ func New(cfg Config, store persistence.Store, authenticator auth.Authenticator) 
 		cfg.MaxSubscribePerSec = 20
 	}
 	b := &Broker{
-		cfg:        cfg,
-		store:      store,
-		trie:       topic.NewTrie(),
-		sharedSubs: make(map[string]map[string][]string),
-		sharedIdx:  make(map[string]int),
-		auth:       authenticator,
-		nodeID:     cfg.NodeID,
-		conns:      make(map[string]*transport.Conn),
-		sessions:   make(map[string]*session.Session),
-		limiters:   make(map[string]*clientLimiter),
+		cfg:         cfg,
+		store:       store,
+		trie:        topic.NewTrie(),
+		sharedSubs:  make(map[string]map[string][]string),
+		sharedIdx:   make(map[string]int),
+		auth:        authenticator,
+		nodeID:      cfg.NodeID,
+		conns:       make(map[string]*transport.Conn),
+		sessions:    make(map[string]*session.Session),
+		limiters:    make(map[string]*clientLimiter),
+		remoteTries: make(map[string]*topic.Trie),
 	}
 	// setup redis cluster if addr provided
 	if cfg.RedisAddr != "" {
@@ -296,6 +344,7 @@ func New(cfg Config, store persistence.Store, authenticator auth.Authenticator) 
 		} else {
 			b.redisCli = cli
 			b.cluster = cluster.New(cli, cfg.NodeID, "mqtt", b.onClusterMessage)
+			b.cluster.SetOnMeta(b.onClusterMeta)
 		}
 	}
 	if cfg.TLSConfig == nil && cfg.TLSCertFile != "" {
@@ -395,7 +444,8 @@ func (b *Broker) Shutdown(ctx context.Context) error {
 }
 
 func (b *Broker) readyzHandler(w http.ResponseWriter, r *http.Request) {
-	// redis check <50ms, goroutines <50k, fd <80%
+	start := time.Now()
+	defer func() { mqttRedisLatency.Observe(time.Since(start).Seconds()) }()
 	if b.redisCli != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 50*time.Millisecond)
 		defer cancel()
@@ -403,6 +453,10 @@ func (b *Broker) readyzHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "redis unavailable", http.StatusServiceUnavailable)
 			return
 		}
+	}
+	if runtime.NumGoroutine() > 50000 {
+		http.Error(w, "too many goroutines", http.StatusServiceUnavailable)
+		return
 	}
 	b.mu.RLock()
 	n := len(b.conns)
@@ -863,7 +917,7 @@ func (b *Broker) routeMessage(topicName string, payload []byte, qos byte, retain
 	if b.cfg.MaxPacketSize > 0 && len(payload)+len(topicName) > b.cfg.MaxPacketSize {
 		return
 	}
-	if b.cluster != nil {
+	if b.cluster != nil && b.hasRemoteSubscribers(topicName) {
 		go func() {
 			if err := b.cluster.Publish(bgCtx(), topicName, payload, qos, retain); err != nil {
 				slog.Warn("cluster publish failed", "err", err)
@@ -1044,14 +1098,19 @@ func (b *Broker) handleSubscribe(conn *transport.Conn, sess *session.Session, pk
 				slog.Warn("store SaveSession failed", "err", err)
 			}
 			codes = append(codes, sub.QoS)
+			if b.cluster != nil {
+				_ = b.cluster.PublishMeta(bgCtx(), "sub", sub.Filter)
+			}
 		} else {
-			// add to trie and session
 			b.trie.Add(sub.Filter, sess.ClientID, sub.QoS, sub.NoLocal)
 			sess.Subscriptions[sub.Filter] = sub.QoS
 			if err := b.store.SaveSession(bgCtx(), sess); err != nil {
 				slog.Warn("store SaveSession failed", "err", err)
 			}
 			codes = append(codes, sub.QoS)
+			if b.cluster != nil {
+				_ = b.cluster.PublishMeta(bgCtx(), "sub", sub.Filter)
+			}
 		}
 
 		// deliver retained messages matching this filter
@@ -1124,6 +1183,9 @@ func (b *Broker) handleUnsubscribe(conn *transport.Conn, sess *session.Session, 
 			b.trie.Remove(t, sess.ClientID)
 		}
 		delete(sess.Subscriptions, t)
+		if b.cluster != nil {
+			_ = b.cluster.PublishMeta(bgCtx(), "unsub", t)
+		}
 	}
 	if err := b.store.SaveSession(bgCtx(), sess); err != nil {
 		slog.Warn("store SaveSession failed", "err", err)
