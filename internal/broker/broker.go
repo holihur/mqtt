@@ -16,6 +16,7 @@ import (
 	"mqtt/internal/auth"
 	"mqtt/internal/cluster"
 	"mqtt/internal/codec"
+	"mqtt/internal/hook"
 	"mqtt/internal/persistence"
 	"mqtt/internal/session"
 	"mqtt/internal/topic"
@@ -101,6 +102,8 @@ type Broker struct {
 
 	remoteMu    sync.RWMutex
 	remoteTries map[string]*topic.Trie // nodeID -> trie of remote subs
+
+	hooks *hook.Manager
 }
 
 func storeCtx() (context.Context, context.CancelFunc) {
@@ -191,11 +194,18 @@ func packetHex(p *codec.Packet) string {
 	return hexStr
 }
 
-func debugPacket(dir, clientID string, pkt *codec.Packet) {
-	if !slog.Default().Enabled(context.Background(), slog.LevelDebug) {
-		return
+func (b *Broker) debugPacket(dir, clientID string, pkt *codec.Packet) {
+	hex := packetHex(pkt)
+	b.hooks.ExecPacket(dir, clientID, pkt, hex)
+	if b.hooks.Len() == 0 && slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		slog.Debug("packet "+dir, "client", clientID, "type", pkt.Type, "version", pkt.Version, "hex", hex)
 	}
-	slog.Debug("packet "+dir, "client", clientID, "type", pkt.Type, "version", pkt.Version, "hex", packetHex(pkt))
+}
+
+func (b *Broker) sendPacket(conn *transport.Conn, pkt *codec.Packet) error {
+	err := conn.WritePacket(pkt)
+	b.debugPacket("send", conn.ClientID(), pkt)
+	return err
 }
 
 func (b *Broker) allowPublish(clientID string) bool {
@@ -332,6 +342,10 @@ func New(cfg Config, store persistence.Store, authenticator auth.Authenticator) 
 		sessions:    make(map[string]*session.Session),
 		limiters:    make(map[string]*clientLimiter),
 		remoteTries: make(map[string]*topic.Trie),
+		hooks:       hook.NewManager(),
+	}
+	if aa := hook.NewAuthAdapter(authenticator); aa != nil {
+		b.hooks.Register(aa)
 	}
 	// setup redis cluster if addr provided
 	if cfg.RedisAddr != "" {
@@ -361,6 +375,12 @@ func New(cfg Config, store persistence.Store, authenticator auth.Authenticator) 
 	}
 	return b
 }
+
+// RegisterHook adds a topic-based hook. Safe for concurrent use and for chaining before Start.
+func (b *Broker) RegisterHook(h hook.Hook) { b.hooks.Register(h) }
+
+// Hooks exposes the hook manager for inspection/testing.
+func (b *Broker) Hooks() *hook.Manager { return b.hooks }
 
 func (b *Broker) Start(ctx context.Context) error {
 	b.stats.StartedAt = time.Now()
@@ -411,8 +431,8 @@ func (b *Broker) Shutdown(ctx context.Context) error {
 			rs := "Server shutting down"
 			disc.DiscProps = &codec.Properties{ReasonString: &rs}
 		}
-		_ = conn.WritePacket(disc)
-		debugPacket("send", conn.ClientID(), disc)
+		_ = b.sendPacket(conn, disc)
+		b.debugPacket("send", conn.ClientID(), disc)
 	}
 	select {
 	case <-time.After(5 * time.Second):
@@ -500,25 +520,24 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 		_ = raw.Close()
 		return
 	}
-	debugPacket("recv", pkt.ClientID, pkt)
+	b.debugPacket("recv", pkt.ClientID, pkt)
 	slog.Info("client connect attempt", "client", pkt.ClientID, "addr", raw.RemoteAddr().String(), "version", pkt.Version, "keepAlive", pkt.KeepAlive, "clean", pkt.ConnectFlags.CleanSession)
 	if pkt.Type != codec.TypeCONNECT {
 		slog.Warn("first packet not CONNECT", "addr", raw.RemoteAddr().String())
 		_ = raw.Close()
 		return
 	}
-	// Authenticate
-	if !b.auth.Authenticate(pkt.ClientID, pkt.Username, pkt.Password) {
-		slog.Info("auth failed", "client", pkt.ClientID, "addr", raw.RemoteAddr().String(), "username", pkt.Username)
+	if err := b.hooks.ExecAuth(pkt.ClientID, pkt.Username, pkt.Password); err != nil {
+		slog.Info("auth denied", "client", pkt.ClientID, "addr", raw.RemoteAddr().String(), "username", pkt.Username, "err", err)
 		mqttAuthFailed.Inc()
 		mqttPacketDropped.WithLabelValues("auth").Inc()
-		reason := byte(0x04) // bad username/password for v3
+		reason := byte(0x04)
 		if pkt.Version == codec.ProtocolV5 {
-			reason = 0x86 // Bad User Name or Password
+			reason = 0x86
 		}
 		resp := &codec.Packet{Type: codec.TypeCONNACK, Version: pkt.Version, ReasonCode: reason}
-		_ = conn.WritePacket(resp)
-		debugPacket("send", pkt.ClientID, resp)
+		_ = b.sendPacket(conn, resp)
+		b.debugPacket("send", pkt.ClientID, resp)
 		_ = conn.Close()
 		return
 	}
@@ -538,8 +557,8 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 			reason = 0x97
 		}
 		resp := &codec.Packet{Type: codec.TypeCONNACK, Version: pkt.Version, ReasonCode: reason}
-		_ = conn.WritePacket(resp)
-		debugPacket("send", clientID, resp)
+		_ = b.sendPacket(conn, resp)
+		b.debugPacket("send", clientID, resp)
 		slog.Info("reject max connections", "client", clientID, "current", len(b.conns), "max", b.cfg.MaxConnections)
 		_ = conn.Close()
 		return
@@ -593,6 +612,17 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 	sess.ExpiryInterval = expiry
 	sess.Mu.Unlock()
 
+	if err := b.hooks.ExecConnect(clientID); err != nil {
+		mqttPacketDropped.WithLabelValues("hook_connect").Inc()
+		reason := byte(0x87)
+		if pkt.Version != codec.ProtocolV5 {
+			reason = 0x04
+		}
+		resp := &codec.Packet{Type: codec.TypeCONNACK, Version: pkt.Version, ReasonCode: reason}
+		_ = b.sendPacket(conn, resp)
+		_ = conn.Close()
+		return
+	}
 	// Kick existing connection with same clientID
 	b.mu.Lock()
 	if old, ok := b.conns[clientID]; ok {
@@ -651,11 +681,11 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 		props.TopicAliasMaximum = &ta
 		connack.ConnProperties = props
 	}
-	if err := conn.WritePacket(connack); err != nil {
+	if err := b.sendPacket(conn, connack); err != nil {
 		_ = conn.Close()
 		return
 	}
-	debugPacket("send", clientID, connack)
+	b.debugPacket("send", clientID, connack)
 	slog.Info("client connected", "client", clientID, "addr", raw.RemoteAddr().String(), "sessionPresent", sessionPresent, "version", pkt.Version, "clean", pkt.ConnectFlags.CleanSession)
 	for filter, qos := range sess.Subscriptions {
 		b.trie.Add(filter, clientID, qos, false)
@@ -681,7 +711,7 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 				pub.PacketID = sess.NextPacketID()
 				sess.AddInflight(&session.InflightEntry{PacketID: pub.PacketID, QoS: m.QoS, Topic: m.Topic, Payload: m.Payload})
 			}
-			_ = conn.WritePacket(pub)
+			_ = b.sendPacket(conn, pub)
 		}
 	}
 
@@ -749,7 +779,7 @@ func (b *Broker) readLoop(conn *transport.Conn, sess *session.Session) {
 			b.onClientDisconnect(conn.ClientID(), sess, false)
 			return
 		}
-		debugPacket("recv", conn.ClientID(), pkt)
+		b.debugPacket("recv", conn.ClientID(), pkt)
 		switch pkt.Type {
 		case codec.TypePUBLISH:
 			slog.Info("publish recv", "client", conn.ClientID(), "topic", pkt.Topic, "qos", pkt.QoS, "retain", pkt.Retain, "payloadLen", len(pkt.Payload))
@@ -765,7 +795,7 @@ func (b *Broker) readLoop(conn *transport.Conn, sess *session.Session) {
 		case codec.TypePUBREC:
 			if _, ok := sess.GetInflight(pkt.PacketID); ok {
 				rel := &codec.Packet{Type: codec.TypePUBREL, Version: conn.Version(), PacketID: pkt.PacketID}
-				_ = conn.WritePacket(rel)
+				_ = b.sendPacket(conn, rel)
 			}
 		case codec.TypePUBREL:
 			if e, ok := sess.GetInflight(pkt.PacketID); ok {
@@ -775,12 +805,12 @@ func (b *Broker) readLoop(conn *transport.Conn, sess *session.Session) {
 				sess.RemoveInflight(pkt.PacketID)
 			}
 			comp := &codec.Packet{Type: codec.TypePUBCOMP, Version: conn.Version(), PacketID: pkt.PacketID}
-			_ = conn.WritePacket(comp)
+			_ = b.sendPacket(conn, comp)
 		case codec.TypePUBCOMP:
 			sess.RemoveInflight(pkt.PacketID)
 		case codec.TypePINGREQ:
 			resp := &codec.Packet{Type: codec.TypePINGRESP, Version: conn.Version()}
-			_ = conn.WritePacket(resp)
+			_ = b.sendPacket(conn, resp)
 		case codec.TypeDISCONNECT:
 			b.onClientDisconnect(conn.ClientID(), sess, true)
 			return
@@ -794,19 +824,7 @@ func (b *Broker) handlePublish(conn *transport.Conn, sess *session.Session, pkt 
 	if strings.HasPrefix(pkt.Topic, "$SYS/") {
 		if pkt.QoS == 1 {
 			ack := &codec.Packet{Type: codec.TypePUBACK, Version: sess.Version, PacketID: pkt.PacketID, Reason: 0x87}
-			_ = conn.WritePacket(ack)
-		}
-		return
-	}
-	// ACL check
-	if !b.auth.Authorize(sess.ClientID, pkt.Topic, true) {
-		mqttPacketDropped.WithLabelValues("acl").Inc()
-		if sess.Version == codec.ProtocolV5 {
-			ack := &codec.Packet{Type: codec.TypePUBACK, Version: codec.ProtocolV5, PacketID: pkt.PacketID, Reason: 0x87} // Not authorized
-			if pkt.QoS == 1 {
-				_ = conn.WritePacket(ack)
-				debugPacket("send", sess.ClientID, ack)
-			}
+			_ = b.sendPacket(conn, ack)
 		}
 		return
 	}
@@ -814,8 +832,17 @@ func (b *Broker) handlePublish(conn *transport.Conn, sess *session.Session, pkt 
 		mqttPacketDropped.WithLabelValues("publish_rate").Inc()
 		if pkt.QoS == 1 {
 			ack := &codec.Packet{Type: codec.TypePUBACK, Version: sess.Version, PacketID: pkt.PacketID, Reason: 0x97}
-			_ = conn.WritePacket(ack)
-			debugPacket("send", sess.ClientID, ack)
+			_ = b.sendPacket(conn, ack)
+			b.debugPacket("send", sess.ClientID, ack)
+		}
+		return
+	}
+	if err := b.hooks.ExecPublish(sess.ClientID, pkt.Topic, pkt.Payload, pkt.QoS, pkt.Retain); err != nil {
+		mqttPacketDropped.WithLabelValues("hook").Inc()
+		if pkt.QoS == 1 {
+			ack := &codec.Packet{Type: codec.TypePUBACK, Version: sess.Version, PacketID: pkt.PacketID, Reason: 0x87}
+			_ = b.sendPacket(conn, ack)
+			b.debugPacket("send", sess.ClientID, ack)
 		}
 		return
 	}
@@ -826,7 +853,7 @@ func (b *Broker) handlePublish(conn *transport.Conn, sess *session.Session, pkt 
 		if alias == 0 || alias > sess.TopicAliasMaximum {
 			if pkt.QoS == 1 {
 				ack := &codec.Packet{Type: codec.TypePUBACK, Version: sess.Version, PacketID: pkt.PacketID, Reason: 0x94}
-				_ = conn.WritePacket(ack)
+				_ = b.sendPacket(conn, ack)
 			}
 			_ = conn.Close()
 			return
@@ -834,7 +861,7 @@ func (b *Broker) handlePublish(conn *transport.Conn, sess *session.Session, pkt 
 		if len(sess.AliasToTopic) >= int(sess.TopicAliasMaximum) && sess.AliasToTopic[alias] == "" {
 			if pkt.QoS == 1 {
 				ack := &codec.Packet{Type: codec.TypePUBACK, Version: sess.Version, PacketID: pkt.PacketID, Reason: 0x94}
-				_ = conn.WritePacket(ack)
+				_ = b.sendPacket(conn, ack)
 			}
 			return
 		}
@@ -849,7 +876,7 @@ func (b *Broker) handlePublish(conn *transport.Conn, sess *session.Session, pkt 
 				// invalid alias
 				if pkt.QoS == 1 {
 					ack := &codec.Packet{Type: codec.TypePUBACK, Version: codec.ProtocolV5, PacketID: pkt.PacketID, Reason: 0x94}
-					_ = conn.WritePacket(ack)
+					_ = b.sendPacket(conn, ack)
 				}
 				return
 			}
@@ -872,12 +899,12 @@ func (b *Broker) handlePublish(conn *transport.Conn, sess *session.Session, pkt 
 	if pkt.QoS == 2 {
 		if _, exists := sess.GetInflight(pkt.PacketID); exists {
 			rec := &codec.Packet{Type: codec.TypePUBREC, Version: conn.Version(), PacketID: pkt.PacketID}
-			_ = conn.WritePacket(rec)
+			_ = b.sendPacket(conn, rec)
 			return
 		}
 		sess.AddInflight(&session.InflightEntry{PacketID: pkt.PacketID, QoS: 2, Topic: topicName, Payload: pkt.Payload, State: "qos2-publish"})
 		rec := &codec.Packet{Type: codec.TypePUBREC, Version: conn.Version(), PacketID: pkt.PacketID}
-		_ = conn.WritePacket(rec)
+		_ = b.sendPacket(conn, rec)
 		return
 	}
 
@@ -900,7 +927,7 @@ func (b *Broker) handlePublish(conn *transport.Conn, sess *session.Session, pkt 
 		if sess.Version == codec.ProtocolV5 {
 			ack.Reason = 0
 		}
-		_ = conn.WritePacket(ack)
+		_ = b.sendPacket(conn, ack)
 	}
 
 	// Route locally + cluster
@@ -980,7 +1007,7 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 			}
 			mqttMessagesSent.Inc()
 			mqttInflight.Set(float64(sess.InflightCount()))
-			_ = conn.WritePacket(pub)
+			_ = b.sendPacket(conn, pub)
 		}
 	}
 	b.sharedMu.Unlock()
@@ -1036,7 +1063,7 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 		}
 		mqttMessagesSent.Inc()
 		mqttInflight.Set(float64(len(sess.Inflight) + 1))
-		if err := conn.WritePacket(pub); err != nil {
+		if err := b.sendPacket(conn, pub); err != nil {
 			slog.Warn("deliver failed", "client", sub.ClientID, "err", err)
 		}
 	}
@@ -1054,8 +1081,8 @@ func (b *Broker) handleSubscribe(conn *transport.Conn, sess *session.Session, pk
 			}
 		}
 		ack := &codec.Packet{Type: codec.TypeSUBACK, Version: conn.Version(), PacketID: pkt.PacketID, SubackCodes: codes}
-		_ = conn.WritePacket(ack)
-		debugPacket("send", sess.ClientID, ack)
+		_ = b.sendPacket(conn, ack)
+		b.debugPacket("send", sess.ClientID, ack)
 		return
 	}
 	var codes []byte
@@ -1064,9 +1091,10 @@ func (b *Broker) handleSubscribe(conn *transport.Conn, sess *session.Session, pk
 			codes = append(codes, 0x80) // failure
 			continue
 		}
-		if !b.auth.Authorize(sess.ClientID, sub.Filter, false) {
+		if err := b.hooks.ExecSubscribe(sess.ClientID, sub.Filter, sub.QoS); err != nil {
+			mqttPacketDropped.WithLabelValues("hook").Inc()
 			if sess.Version == codec.ProtocolV5 {
-				codes = append(codes, 0x87) // Not authorized
+				codes = append(codes, 0x87)
 			} else {
 				codes = append(codes, 0x80)
 			}
@@ -1144,7 +1172,7 @@ func (b *Broker) handleSubscribe(conn *transport.Conn, sess *session.Session, pk
 				} else {
 					pub.QoS = 0
 				}
-				_ = conn.WritePacket(pub)
+				_ = b.sendPacket(conn, pub)
 			}
 		}
 	}
@@ -1152,11 +1180,15 @@ func (b *Broker) handleSubscribe(conn *transport.Conn, sess *session.Session, pk
 	if sess.Version == codec.ProtocolV5 {
 		ack.SubackProps = &codec.Properties{}
 	}
-	_ = conn.WritePacket(ack)
+	_ = b.sendPacket(conn, ack)
 }
 
 func (b *Broker) handleUnsubscribe(conn *transport.Conn, sess *session.Session, pkt *codec.Packet) {
 	for _, t := range pkt.Topics {
+		if err := b.hooks.ExecUnsubscribe(sess.ClientID, t); err != nil {
+			mqttPacketDropped.WithLabelValues("hook").Inc()
+			continue
+		}
 		if isShared, group, realFilter := isSharedFilter(t); isShared {
 			b.sharedMu.Lock()
 			if m, ok := b.sharedSubs[group]; ok {
@@ -1195,10 +1227,11 @@ func (b *Broker) handleUnsubscribe(conn *transport.Conn, sess *session.Session, 
 		ack.UnsubackProps = &codec.Properties{}
 		ack.UnsubackCodes = make([]byte, len(pkt.Topics)) // 0 = success
 	}
-	_ = conn.WritePacket(ack)
+	_ = b.sendPacket(conn, ack)
 }
 
 func (b *Broker) onClientDisconnect(clientID string, sess *session.Session, clean bool) {
+	b.hooks.ExecDisconnect(clientID, clean)
 	b.mu.Lock()
 	delete(b.conns, clientID)
 	b.mu.Unlock()
@@ -1256,7 +1289,7 @@ func (b *Broker) handleWill(sess *session.Session) {
 	}
 	w := sess.Will
 	sess.Will = nil
-	if !b.auth.Authorize(sess.ClientID, w.Topic, true) {
+	if err := b.hooks.ExecPublish(sess.ClientID, w.Topic, w.Payload, w.QoS, w.Retain); err != nil {
 		return
 	}
 	if w.DelayInterval > 86400 {
@@ -1310,7 +1343,7 @@ func (b *Broker) scheduleRetry(clientID string, packetID uint16) {
 		if e, ok := sess.GetInflight(packetID); ok {
 			e.Dup = true
 			pub := &codec.Packet{Type: codec.TypePUBLISH, Version: conn.Version(), Topic: e.Topic, QoS: e.QoS, Payload: e.Payload, PacketID: packetID, Dup: true}
-			_ = conn.WritePacket(pub)
+			_ = b.sendPacket(conn, pub)
 			b.scheduleRetry(clientID, packetID)
 		}
 	})
