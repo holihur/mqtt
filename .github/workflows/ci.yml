@@ -62,6 +62,23 @@ jobs:
       - name: Bench smoke
         run: go test -run=^$ -bench=. ./... -benchmem -benchtime=1x 2>&1 | head -n 40
 
+      - name: Coverage (internal)
+        run: |
+          go test ./internal/... -coverprofile=cover.out -covermode=atomic 2>&1 | tail -n 20
+          go tool cover -func=cover.out | tail -n 30
+          echo "total=$(go tool cover -func=cover.out | grep total | awk '{print $3}')" >> $GITHUB_ENV
+          # also full repo for codecov
+          go test ./... -coverprofile=coverall.out -covermode=atomic 2>&1 | tail -n 20 || true
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverall.out
+          fail_ci_if_error: false
+          verbose: true
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
       - name: Fuzz (3s, GitHub only)
         run: task fuzz 2>&1 | tail -n 30
 

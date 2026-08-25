@@ -7,6 +7,24 @@ linters:
     - staticcheck
     - ineffassign
     - unused
+    - funlen
+    - gocyclo
+    - gocognit
+    - lll
+    - cyclop
+  settings:
+    funlen:
+      lines: 120
+      statements: 80
+    gocyclo:
+      min-complexity: 25
+    gocognit:
+      min-complexity: 40
+    lll:
+      line-length: 150
+    cyclop:
+      max-complexity: 20
+      package-average: 15.0
   exclusions:
     generated: lax
     presets:
@@ -23,6 +41,13 @@ linters:
           - errcheck
           - unused
           - staticcheck
+      - path: internal/broker/broker.*\.go
+        linters:
+          - funlen
+          - gocyclo
+          - gocognit
+          - cyclop
+          - lll
 formatters:
   enable:
     - gofmt

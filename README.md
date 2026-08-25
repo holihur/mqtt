@@ -1,5 +1,5 @@
 # MQTT Broker — Go + Redis Cluster
-[![CI](https://github.com/kingfisher-vvv/mqtt/actions/workflows/ci.yml/badge.svg)](https://github.com/kingfisher-vvv/mqtt/actions/workflows/ci.yml)
+[![CI](https://github.com/holihur/mqtt/actions/workflows/ci.yml/badge.svg)](https://github.com/holihur/mqtt/actions/workflows/ci.yml) [![codecov](https://codecov.io/gh/holihur/mqtt/branch/main/graph/badge.svg)](https://codecov.io/gh/holihur/mqtt)
 
 支持 **MQTT 3.1 (0x03) / 3.1.1 (0x04) / 5.0 (0x05)** 的分布式 Broker，单机可跑，多实例通过 Redis 水平扩展。
 
