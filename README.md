@@ -102,18 +102,18 @@ internal/auth     Auth/ACL 插件
 
 ## 基准与压测（CI 自动更新）
 <!-- BENCH_START -->
-> 更新: 2026-08-25 01:38 UTC | goos: linux goarch: amd64 | cpu: AMD EPYC 9V74 80-Core Processor                
+> 更新: 2026-08-25 01:59 UTC | goos: linux goarch: amd64 | cpu: AMD EPYC 7763 64-Core Processor                
 >
 > ```
 > goos: linux
 goarch: amd64
-cpu: AMD EPYC 9V74 80-Core Processor                
-Benchmark10kClients-4          	       1	    381796 ns/op	   18032 B/op	      81 allocs/op
-BenchmarkPublishThroughput-4   	2026/08/25 01:38:04 INFO publish recv client=pub-bench topic=bench/test qos=0 retain=false payloadLen=7
+cpu: AMD EPYC 7763 64-Core Processor                
+Benchmark10kClients-4          	       1	    574539 ns/op	   17664 B/op	      78 allocs/op
+BenchmarkPublishThroughput-4   	2026/08/25 01:59:53 INFO client connected client=pub-bench addr=127.0.0.1:43882 sessionPresent=false version=4 clean=true
 > ```
 >
-> - Benchmark10kClients-4 1 381796 ns/op 18032 B/op 81 allocs/op
-> - BenchmarkPublishThroughput-4 2026/08/25 01:38:04 INFO publish recv client=pub-bench topic=bench/test qos=0 retain=false payloadLen=7
+> - Benchmark10kClients-4 1 574539 ns/op 17664 B/op 78 allocs/op
+> - BenchmarkPublishThroughput-4 2026/08/25 01:59:53 INFO client connected client=pub-bench addr=127.0.0.1:43882 sessionPresent=false version=4 clean=true
 > - 详见 [`docs/bench.md`](docs/bench.md) 与 Artifacts `bench.txt`/`c10k.txt`
 
 <!-- BENCH_END -->
