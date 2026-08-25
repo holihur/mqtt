@@ -230,10 +230,6 @@ func (b *Broker) allowSubscribe(clientID string) bool {
 		lim.subscribeCount = 0
 	}
 	lim.subscribeCount++
-	// subscribe limit shares window with publish but separate counter
-	if now.Sub(lim.window) >= time.Second {
-		lim.subscribeCount = 1
-	}
 	return lim.subscribeCount <= b.cfg.MaxSubscribePerSec
 }
 
