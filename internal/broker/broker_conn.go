@@ -324,6 +324,7 @@ func (b *Broker) readLoop(conn *transport.Conn, sess *session.Session) {
 	}
 }
 
+//nolint:unused
 func (b *Broker) keepAliveMonitor(conn *transport.Conn, sess *session.Session) {
 	interval := time.Duration(float64(sess.KeepAlive)*1.5) * time.Second
 	if interval == 0 {

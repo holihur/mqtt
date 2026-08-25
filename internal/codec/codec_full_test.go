@@ -23,7 +23,7 @@ func roundtrip(t *testing.T, p *Packet) *Packet {
 func ptrU32(v uint32) *uint32 { return &v }
 func ptrU16(v uint16) *uint16 { return &v }
 func ptrByte(v byte) *byte    { return &v }
-func ptrStr(s string) *string  { return &s }
+func ptrStr(s string) *string { return &s }
 
 // ---- Pool ----
 
@@ -68,18 +68,18 @@ func TestConnackV5Roundtrip(t *testing.T) {
 		SessionPresent: false,
 		ReasonCode:     0,
 		ConnProperties: &Properties{
-			ReceiveMaximum:   ptrU16(100),
-			MaximumQoS:       ptrByte(1),
-			RetainAvailable:  ptrByte(1),
-			AssignedClientID: ptrStr("assigned-id"),
-			ServerKeepAlive:  &keepAlive,
-			TopicAliasMaximum: ptrU16(50),
+			ReceiveMaximum:       ptrU16(100),
+			MaximumQoS:           ptrByte(1),
+			RetainAvailable:      ptrByte(1),
+			AssignedClientID:     ptrStr("assigned-id"),
+			ServerKeepAlive:      &keepAlive,
+			TopicAliasMaximum:    ptrU16(50),
 			WildcardSubAvailable: ptrByte(1),
-			SubIDAvailable:   ptrByte(1),
-			SharedSubAvailable: ptrByte(1),
-			MaximumPacketSize: ptrU32(65535),
-			User:             []UserProperty{{Key: "k1", Val: "v1"}},
-			ReasonString:     ptrStr("ok"),
+			SubIDAvailable:       ptrByte(1),
+			SharedSubAvailable:   ptrByte(1),
+			MaximumPacketSize:    ptrU32(65535),
+			User:                 []UserProperty{{Key: "k1", Val: "v1"}},
+			ReasonString:         ptrStr("ok"),
 		},
 	}
 	dec := roundtrip(t, p)
@@ -186,13 +186,13 @@ func TestPublishV5WithTopicAlias(t *testing.T) {
 		PacketID: 100,
 		Payload:  []byte("v5 data"),
 		PubProps: &Properties{
-			TopicAlias:            &ta,
-			MessageExpiryInterval: ptrU32(300),
-			ResponseTopic:         ptrStr("reply/to"),
-			CorrelationData:       []byte{0x01, 0x02},
-			ContentType:           ptrStr("application/json"),
+			TopicAlias:             &ta,
+			MessageExpiryInterval:  ptrU32(300),
+			ResponseTopic:          ptrStr("reply/to"),
+			CorrelationData:        []byte{0x01, 0x02},
+			ContentType:            ptrStr("application/json"),
 			PayloadFormatIndicator: ptrByte(1),
-			User:                  []UserProperty{{Key: "k", Val: "v"}, {Key: "k2", Val: "v2"}},
+			User:                   []UserProperty{{Key: "k", Val: "v"}, {Key: "k2", Val: "v2"}},
 		},
 	}
 	dec := roundtrip(t, p)
@@ -513,10 +513,10 @@ func TestDisconnectV5Roundtrip(t *testing.T) {
 		Version:    ProtocolV5,
 		DiscReason: 0x04,
 		DiscProps: &Properties{
-			ReasonString:        ptrStr("disconnect reason"),
-			ServerReference:     ptrStr("server2.example.com"),
+			ReasonString:          ptrStr("disconnect reason"),
+			ServerReference:       ptrStr("server2.example.com"),
 			SessionExpiryInterval: ptrU32(60),
-			User:                []UserProperty{{Key: "dk", Val: "dv"}},
+			User:                  []UserProperty{{Key: "dk", Val: "dv"}},
 		},
 	}
 	dec := roundtrip(t, p)
@@ -564,10 +564,10 @@ func TestAuthRoundtrip(t *testing.T) {
 		Version:    ProtocolV5,
 		AuthReason: 0x18, // Continue authentication
 		AuthProps: &Properties{
-			AuthMethod: ptrStr("SCRAM-SHA-256"),
-			AuthData:   []byte{0x01, 0x02, 0x03},
+			AuthMethod:   ptrStr("SCRAM-SHA-256"),
+			AuthData:     []byte{0x01, 0x02, 0x03},
 			ReasonString: ptrStr("continue"),
-			User:       []UserProperty{{Key: "ak", Val: "av"}},
+			User:         []UserProperty{{Key: "ak", Val: "av"}},
 		},
 	}
 	dec := roundtrip(t, p)
@@ -872,11 +872,11 @@ func TestDecodeWithVersionV311(t *testing.T) {
 
 func TestDecodeWithVersionV5(t *testing.T) {
 	p := &Packet{
-		Type:     TypePUBLISH,
-		Version:  ProtocolV5,
-		Topic:    "test/v5vw",
-		QoS:      0,
-		Payload:  []byte("hello v5"),
+		Type:    TypePUBLISH,
+		Version: ProtocolV5,
+		Topic:   "test/v5vw",
+		QoS:     0,
+		Payload: []byte("hello v5"),
 		PubProps: &Properties{
 			PayloadFormatIndicator: ptrByte(1),
 		},
@@ -992,10 +992,10 @@ func TestDecodeConnectBadProtocol(t *testing.T) {
 	// Build a CONNECT with an invalid protocol name
 	buf := []byte{}
 	buf = append(buf, 0, 3, 'B', 'A', 'D') // protocol name "BAD"
-	buf = append(buf, 4)                     // level
-	buf = append(buf, 0x02)                  // flags clean session
-	buf = append(buf, 0, 60)                 // keepalive
-	buf = append(buf, 0, 3, 'c', 'i', 'd')  // client id
+	buf = append(buf, 4)                   // level
+	buf = append(buf, 0x02)                // flags clean session
+	buf = append(buf, 0, 60)               // keepalive
+	buf = append(buf, 0, 3, 'c', 'i', 'd') // client id
 	frame := []byte{TypeCONNECT << 4, byte(len(buf))}
 	frame = append(frame, buf...)
 	_, err := Decode(frame)
@@ -1007,10 +1007,10 @@ func TestDecodeConnectBadProtocol(t *testing.T) {
 func TestDecodeConnectUnsupportedLevel(t *testing.T) {
 	buf := []byte{}
 	buf = append(buf, 0, 4, 'M', 'Q', 'T', 'T') // protocol name "MQTT"
-	buf = append(buf, 99)                          // unsupported level
-	buf = append(buf, 0x02)                        // flags
-	buf = append(buf, 0, 60)                       // keepalive
-	buf = append(buf, 0, 3, 'c', 'i', 'd')        // client id
+	buf = append(buf, 99)                       // unsupported level
+	buf = append(buf, 0x02)                     // flags
+	buf = append(buf, 0, 60)                    // keepalive
+	buf = append(buf, 0, 3, 'c', 'i', 'd')      // client id
 	frame := []byte{TypeCONNECT << 4, byte(len(buf))}
 	frame = append(frame, buf...)
 	_, err := Decode(frame)
@@ -1215,7 +1215,7 @@ func TestEncodeWillPropertiesWithDelay(t *testing.T) {
 func TestEncodeWillPropertiesWithProps(t *testing.T) {
 	delay := uint32(30)
 	props := &Properties{
-		User:                  []UserProperty{{Key: "k", Val: "v"}},
+		User:                   []UserProperty{{Key: "k", Val: "v"}},
 		PayloadFormatIndicator: ptrByte(1),
 		MessageExpiryInterval:  ptrU32(120),
 		ContentType:            ptrStr("text/plain"),
@@ -1770,9 +1770,9 @@ func TestPropertiesUserPropertyTooLongValue(t *testing.T) {
 func TestDecodeConnectTruncatedKeepAlive(t *testing.T) {
 	buf := []byte{}
 	buf = append(buf, 0, 4, 'M', 'Q', 'T', 'T') // protocol
-	buf = append(buf, 4)                           // level
-	buf = append(buf, 0x02)                        // flags
-	buf = append(buf, 0)                           // only 1 byte of keepalive
+	buf = append(buf, 4)                        // level
+	buf = append(buf, 0x02)                     // flags
+	buf = append(buf, 0)                        // only 1 byte of keepalive
 	frame := []byte{TypeCONNECT << 4, byte(len(buf))}
 	frame = append(frame, buf...)
 	_, err := Decode(frame)
@@ -1884,7 +1884,7 @@ func TestDecodeConnectWillTruncatedPayload(t *testing.T) {
 	buf = append(buf, 0, 60)
 	buf = append(buf, 0, 3, 'c', 'i', 'd')
 	buf = append(buf, 0, 3, 'w', '/', 't') // will topic
-	buf = append(buf, 0, 5, 'a', 'b')       // will payload says 5 but only 2
+	buf = append(buf, 0, 5, 'a', 'b')      // will payload says 5 but only 2
 	frame := []byte{TypeCONNECT << 4, byte(len(buf))}
 	frame = append(frame, buf...)
 	_, err := Decode(frame)

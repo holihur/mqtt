@@ -18,10 +18,10 @@ func TestInit(t *testing.T) {
 		{"INFO", slog.LevelInfo},
 		{"WARN", slog.LevelWarn},
 		{"ERROR", slog.LevelError},
-		{"", slog.LevelInfo},          // default
-		{"unknown", slog.LevelInfo},   // default for unknown
-		{"Debug", slog.LevelDebug},    // mixed case
-		{"Warning", slog.LevelInfo},   // not in map, falls to default
+		{"", slog.LevelInfo},        // default
+		{"unknown", slog.LevelInfo}, // default for unknown
+		{"Debug", slog.LevelDebug},  // mixed case
+		{"Warning", slog.LevelInfo}, // not in map, falls to default
 	}
 	for _, tt := range tests {
 		t.Run(tt.level, func(t *testing.T) {

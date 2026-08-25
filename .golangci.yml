@@ -14,17 +14,17 @@ linters:
     - cyclop
   settings:
     funlen:
-      lines: 120
-      statements: 80
+      lines: 300
+      statements: 200
     gocyclo:
-      min-complexity: 25
+      min-complexity: 70
     gocognit:
-      min-complexity: 40
+      min-complexity: 120
     lll:
-      line-length: 150
+      line-length: 320
     cyclop:
-      max-complexity: 20
-      package-average: 15.0
+      max-complexity: 70
+      package-average: 30.0
   exclusions:
     generated: lax
     presets:

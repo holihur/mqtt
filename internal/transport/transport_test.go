@@ -114,10 +114,10 @@ func TestReadPacket_V5(t *testing.T) {
 	conn.SetVersion(codec.ProtocolV5)
 
 	pkt := &codec.Packet{
-		Type:          codec.TypeCONNACK,
-		Version:       codec.ProtocolV5,
+		Type:           codec.TypeCONNACK,
+		Version:        codec.ProtocolV5,
 		SessionPresent: false,
-		ReasonCode:    0,
+		ReasonCode:     0,
 	}
 	data, err := codec.Encode(pkt)
 	if err != nil {
@@ -338,8 +338,8 @@ func TestWritePacket_Subscribe(t *testing.T) {
 
 	conn := NewConn(server, 1<<20)
 	pkt := &codec.Packet{
-		Type:    codec.TypeSUBSCRIBE,
-		Version: codec.ProtocolV311,
+		Type:     codec.TypeSUBSCRIBE,
+		Version:  codec.ProtocolV311,
 		PacketID: 1,
 		Subscriptions: []codec.Subscription{
 			{Filter: "test/#", QoS: 1},
@@ -478,12 +478,12 @@ func TestReadPacket_Connect(t *testing.T) {
 	conn := NewConn(server, 1<<20)
 
 	connectPkt := &codec.Packet{
-		Type:         codec.TypeCONNECT,
-		Version:      codec.ProtocolV311,
-		ProtocolName: "MQTT",
+		Type:          codec.TypeCONNECT,
+		Version:       codec.ProtocolV311,
+		ProtocolName:  "MQTT",
 		ProtocolLevel: 4,
-		ClientID:     "test-client",
-		KeepAlive:    60,
+		ClientID:      "test-client",
+		KeepAlive:     60,
 	}
 	data, err := codec.Encode(connectPkt)
 	if err != nil {

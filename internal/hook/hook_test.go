@@ -83,8 +83,7 @@ func TestManagerHooks(t *testing.T) {
 	if len(snap) != 1 {
 		t.Fatalf("Hooks len = %d, want 1", len(snap))
 	}
-	// mutating snapshot does not affect manager
-	snap = append(snap, &AuthHook{})
+	_ = append(snap, &AuthHook{})
 	if m.Len() != 1 {
 		t.Fatalf("Len mutated = %d, want 1", m.Len())
 	}
@@ -96,12 +95,12 @@ func TestManagerHooks(t *testing.T) {
 
 type denyHook struct{ BaseHook }
 
-func (denyHook) ID() string                                    { return "deny" }
-func (denyHook) OnAuth(string, string, []byte) error           { return ErrDenied }
-func (denyHook) OnConnect(string) error                        { return ErrDenied }
+func (denyHook) ID() string                                         { return "deny" }
+func (denyHook) OnAuth(string, string, []byte) error                { return ErrDenied }
+func (denyHook) OnConnect(string) error                             { return ErrDenied }
 func (denyHook) OnPublish(string, string, []byte, byte, bool) error { return ErrDenied }
-func (denyHook) OnSubscribe(string, string, byte) error        { return ErrDenied }
-func (denyHook) OnUnsubscribe(string, string) error            { return ErrDenied }
+func (denyHook) OnSubscribe(string, string, byte) error             { return ErrDenied }
+func (denyHook) OnUnsubscribe(string, string) error                 { return ErrDenied }
 
 func TestExecAuth(t *testing.T) {
 	tests := []struct {

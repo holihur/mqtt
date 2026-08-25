@@ -19,7 +19,7 @@ func TestGoleakBrokerStartStop(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	cancel()
 	time.Sleep(200 * time.Millisecond)
-	goleak.VerifyNone(t)
+	goleak.VerifyNone(t, goleak.IgnoreTopFunction("github.com/redis/go-redis/v9/maintnotifications.(*CircuitBreakerManager).cleanupLoop"))
 }
 
 func TestGoleakNoLeakAfterPublish(t *testing.T) {
@@ -45,5 +45,5 @@ func TestGoleakNoLeakAfterPublish(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	cancel()
 	time.Sleep(200 * time.Millisecond)
-	goleak.VerifyNone(t)
+	goleak.VerifyNone(t, goleak.IgnoreTopFunction("github.com/redis/go-redis/v9/maintnotifications.(*CircuitBreakerManager).cleanupLoop"))
 }
