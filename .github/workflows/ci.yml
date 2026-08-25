@@ -104,7 +104,7 @@ jobs:
           p = pathlib.Path("README.md")
           s = p.read_text(encoding="utf-8")
           block = pathlib.Path("/tmp/bench_block.md").read_text(encoding="utf-8")
-          new = re.sub(r"<!-- BENCH_START -->.*?<!-- BENCH_END -->", f"<!-- BENCH_START -->\n{block}\n<!-- BENCH_END -->", s, flags=re.S)
+          new = re.sub(r"<!-- BENCH_START -->.*?<!-- BENCH_END -->", lambda _: f"<!-- BENCH_START -->\n{block}\n<!-- BENCH_END -->", s, flags=re.S)
           if new != s:
               p.write_text(new, encoding="utf-8")
               print("README.md updated")
