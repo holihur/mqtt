@@ -118,6 +118,28 @@ func loadTLSConfig(certFile, keyFile, caFile string) (*tls.Config, error) {
 	return cfg, nil
 }
 
+func packetHex(p *codec.Packet) string {
+	if p == nil {
+		return ""
+	}
+	data, err := codec.Encode(p)
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	hexStr := fmt.Sprintf("%x", data)
+	if len(hexStr) > 512 {
+		hexStr = hexStr[:512] + "..."
+	}
+	return hexStr
+}
+
+func debugPacket(dir, clientID string, pkt *codec.Packet) {
+	if !slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		return
+	}
+	slog.Debug("packet "+dir, "client", clientID, "type", pkt.Type, "version", pkt.Version, "hex", packetHex(pkt))
+}
+
 func New(cfg Config, store persistence.Store, authenticator auth.Authenticator) *Broker {
 	if cfg.NodeID == "" {
 		cfg.NodeID = uuid.NewString()[:8]
@@ -248,6 +270,8 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 		_ = raw.Close()
 		return
 	}
+	debugPacket("recv", pkt.ClientID, pkt)
+	slog.Info("client connect attempt", "client", pkt.ClientID, "addr", raw.RemoteAddr().String(), "version", pkt.Version, "keepAlive", pkt.KeepAlive, "clean", pkt.ConnectFlags.CleanSession)
 	if pkt.Type != codec.TypeCONNECT {
 		slog.Warn("first packet not CONNECT", "addr", raw.RemoteAddr().String())
 		_ = raw.Close()
@@ -255,6 +279,7 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 	}
 	// Authenticate
 	if !b.auth.Authenticate(pkt.ClientID, pkt.Username, pkt.Password) {
+		slog.Info("auth failed", "client", pkt.ClientID, "addr", raw.RemoteAddr().String(), "username", pkt.Username)
 		reason := byte(0x04) // bad username/password for v3
 		if pkt.Version == codec.ProtocolV5 {
 			reason = 0x86 // Bad User Name or Password
@@ -381,8 +406,8 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 		_ = conn.Close()
 		return
 	}
-
-	// Subscribe persistence: restore trie entries from session.Subscriptions
+	debugPacket("send", clientID, connack)
+	slog.Info("client connected", "client", clientID, "addr", raw.RemoteAddr().String(), "sessionPresent", sessionPresent, "version", pkt.Version, "clean", pkt.ConnectFlags.CleanSession)
 	for filter, qos := range sess.Subscriptions {
 		b.trie.Add(filter, clientID, qos, false)
 	}
@@ -472,16 +497,19 @@ func (b *Broker) readLoop(conn *transport.Conn, sess *session.Session) {
 		}
 		pkt, err := conn.ReadPacket()
 		if err != nil {
-			// trigger will if not clean disconnect
 			b.onClientDisconnect(conn.ClientID(), sess, false)
 			return
 		}
+		debugPacket("recv", conn.ClientID(), pkt)
 		switch pkt.Type {
 		case codec.TypePUBLISH:
+			slog.Info("publish recv", "client", conn.ClientID(), "topic", pkt.Topic, "qos", pkt.QoS, "retain", pkt.Retain, "payloadLen", len(pkt.Payload))
 			b.handlePublish(conn, sess, pkt)
 		case codec.TypeSUBSCRIBE:
+			slog.Info("subscribe recv", "client", conn.ClientID(), "packetID", pkt.PacketID, "filters", pkt.Subscriptions)
 			b.handleSubscribe(conn, sess, pkt)
 		case codec.TypeUNSUBSCRIBE:
+			slog.Info("unsubscribe recv", "client", conn.ClientID(), "packetID", pkt.PacketID, "topics", pkt.Topics)
 			b.handleUnsubscribe(conn, sess, pkt)
 		case codec.TypePUBACK:
 			sess.RemoveInflight(pkt.PacketID)
@@ -892,8 +920,10 @@ func (b *Broker) onClientDisconnect(clientID string, sess *session.Session, clea
 	delete(b.conns, clientID)
 	b.mu.Unlock()
 	if sess == nil {
+		slog.Info("client disconnect", "client", clientID, "clean", clean)
 		return
 	}
+	slog.Info("client disconnect", "client", clientID, "clean", clean, "node", sess.NodeID)
 	sess.Mu.Lock()
 	expiry := sess.ExpiryInterval
 	subs := make([]string, 0, len(sess.Subscriptions))

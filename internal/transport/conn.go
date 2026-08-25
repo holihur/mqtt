@@ -2,6 +2,9 @@ package transport
 
 import (
 	"bufio"
+	"context"
+	"fmt"
+	"log/slog"
 	"net"
 	"sync"
 	"time"
@@ -43,22 +46,40 @@ func (c *Conn) ReadPacket() (*codec.Packet, error) {
 	if err != nil {
 		return nil, err
 	}
+	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		hexStr := fmt.Sprintf("%x", frame)
+		if len(hexStr) > 512 {
+			hexStr = hexStr[:512] + "..."
+		}
+		slog.Debug("packet recv raw", "client", c.clientID, "hex", hexStr, "len", len(frame))
+	}
 	// Use version-aware decode if we know version
 	if c.version == codec.ProtocolV5 {
-		return codec.DecodeWithVersion(frame, c.version)
+		p, err := codec.DecodeWithVersion(frame, c.version)
+		if err == nil && slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+			slog.Debug("packet recv decoded", "client", c.clientID, "type", p.Type, "topic", p.Topic, "packetID", p.PacketID)
+		}
+		return p, err
 	}
 	// generic decode, but try to infer version from frame if it's CONNECT
 	p, err := codec.Decode(frame)
-	if err != nil {
-		return nil, err
+	if err == nil && slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		slog.Debug("packet recv decoded", "client", c.clientID, "type", p.Type, "topic", p.Topic, "packetID", p.PacketID)
 	}
-	return p, nil
+	return p, err
 }
 
 func (c *Conn) WritePacket(p *codec.Packet) error {
 	data, err := codec.Encode(p)
 	if err != nil {
 		return err
+	}
+	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		hexStr := fmt.Sprintf("%x", data)
+		if len(hexStr) > 512 {
+			hexStr = hexStr[:512] + "..."
+		}
+		slog.Debug("packet send", "client", c.clientID, "type", p.Type, "hex", hexStr, "len", len(data))
 	}
 	c.writerMu.Lock()
 	defer c.writerMu.Unlock()
