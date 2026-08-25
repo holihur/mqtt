@@ -10,6 +10,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"log/slog"
@@ -93,7 +94,6 @@ type Broker struct {
 	conns    map[string]*transport.Conn // clientID -> conn
 	sessions map[string]*session.Session
 
-	statsMu  sync.Mutex
 	stats    BrokerStats
 	listener *transport.Listener
 
@@ -712,10 +712,8 @@ func (b *Broker) sysTicker(ctx context.Context) {
 	}
 }
 func (b *Broker) publishSys() {
-	b.statsMu.Lock()
 	u := time.Since(b.stats.StartedAt).Seconds()
 	n := int64(len(b.conns))
-	b.statsMu.Unlock()
 	b.routeMessage("$SYS/broker/uptime", []byte(fmt.Sprintf("%.0f", u)), 0, true, nil, "sys")
 	b.routeMessage("$SYS/broker/clients/connected", []byte(fmt.Sprintf("%d", n)), 0, true, nil, "sys")
 	_ = u
@@ -783,6 +781,7 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 		_ = conn.Close()
 		return
 	}
+	sess.Mu.Lock()
 	sess.ClientID = clientID
 	sess.Version = pkt.Version
 	sess.KeepAlive = pkt.KeepAlive
@@ -803,12 +802,6 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 			sess.TopicAliasMaximum = v
 		}
 	}
-	b.statsMu.Lock()
-	b.stats.ClientsConnected = int64(len(b.conns)) + 1
-	b.stats.ClientsTotal++
-	b.statsMu.Unlock()
-
-	// Clean start handling per version
 	clean := pkt.ConnectFlags.CleanSession
 	expiry := uint32(0)
 	if pkt.Version == codec.ProtocolV5 && pkt.Properties != nil && pkt.Properties.SessionExpiryInterval != nil {
@@ -816,12 +809,13 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 	} else if clean {
 		expiry = 0
 	} else {
-		expiry = 0xFFFFFFFF // v3 clean false => never expire
+		expiry = 0xFFFFFFFF
 	}
-	sess.Mu.Lock()
 	sess.CleanStart = clean
 	sess.ExpiryInterval = expiry
 	sess.Mu.Unlock()
+	atomic.StoreInt64(&b.stats.ClientsConnected, int64(len(b.conns))+1)
+	atomic.AddInt64(&b.stats.ClientsTotal, 1)
 
 	if err := b.hooks.ExecConnect(clientID); err != nil {
 		mqttPacketDropped.WithLabelValues("hook_connect").Inc()
@@ -944,8 +938,10 @@ func (b *Broker) getOrCreateSession(pkt *codec.Packet) (*session.Session, bool, 
 		b.mu.RUnlock()
 		existed := true
 		if pkt.ConnectFlags.CleanSession {
+			s.Mu.Lock()
 			s.Subscriptions = make(map[string]byte)
 			s.Inflight = make(map[uint16]*session.InflightEntry)
+			s.Mu.Unlock()
 			if err := b.store.ClearOffline(bgCtx(), clientID); err != nil {
 				slog.Warn("store ClearOffline failed", "err", err)
 			}
@@ -960,8 +956,10 @@ func (b *Broker) getOrCreateSession(pkt *codec.Packet) (*session.Session, bool, 
 	if s != nil {
 		existed := true
 		if pkt.ConnectFlags.CleanSession {
+			s.Mu.Lock()
 			s.Subscriptions = make(map[string]byte)
 			s.Inflight = make(map[uint16]*session.InflightEntry)
+			s.Mu.Unlock()
 			if err := b.store.ClearOffline(bgCtx(), clientID); err != nil {
 				slog.Warn("store ClearOffline failed", "err", err)
 			}
@@ -993,13 +991,13 @@ func (b *Broker) readLoop(conn *transport.Conn, sess *session.Session) {
 		b.debugPacket("recv", conn.ClientID(), pkt)
 		switch pkt.Type {
 		case codec.TypePUBLISH:
-			slog.Info("publish recv", "client", conn.ClientID(), "topic", pkt.Topic, "qos", pkt.QoS, "retain", pkt.Retain, "payloadLen", len(pkt.Payload))
+			slog.Debug("publish recv", "client", conn.ClientID(), "topic", pkt.Topic, "qos", pkt.QoS, "retain", pkt.Retain, "payloadLen", len(pkt.Payload))
 			b.handlePublish(conn, sess, pkt)
 		case codec.TypeSUBSCRIBE:
-			slog.Info("subscribe recv", "client", conn.ClientID(), "packetID", pkt.PacketID, "filters", pkt.Subscriptions)
+			slog.Debug("subscribe recv", "client", conn.ClientID(), "packetID", pkt.PacketID, "filters", pkt.Subscriptions)
 			b.handleSubscribe(conn, sess, pkt)
 		case codec.TypeUNSUBSCRIBE:
-			slog.Info("unsubscribe recv", "client", conn.ClientID(), "packetID", pkt.PacketID, "topics", pkt.Topics)
+			slog.Debug("unsubscribe recv", "client", conn.ClientID(), "packetID", pkt.PacketID, "topics", pkt.Topics)
 			b.handleUnsubscribe(conn, sess, pkt)
 		case codec.TypePUBACK:
 			sess.RemoveInflight(pkt.PacketID)
@@ -1148,9 +1146,7 @@ func (b *Broker) handlePublish(conn *transport.Conn, sess *session.Session, pkt 
 }
 
 func (b *Broker) routeMessage(topicName string, payload []byte, qos byte, retain bool, props *codec.Properties, from string) {
-	b.statsMu.Lock()
-	b.stats.MessagesReceived++
-	b.statsMu.Unlock()
+	atomic.AddInt64(&b.stats.MessagesReceived, 1)
 	mqttMessagesReceived.Inc()
 	if b.cfg.MaxPacketSize > 0 && len(payload)+len(topicName) > b.cfg.MaxPacketSize {
 		return
@@ -1166,14 +1162,19 @@ func (b *Broker) routeMessage(topicName string, payload []byte, qos byte, retain
 }
 
 func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props *codec.Properties, from string) {
-	// SharedSub handling: deliver one per group round-robin
+	type shChoice struct {
+		group  string
+		filter string
+		client string
+	}
+	var choices []shChoice
 	b.sharedMu.Lock()
 	for group, filters := range b.sharedSubs {
 		for filter, clients := range filters {
 			if len(clients) == 0 {
 				continue
 			}
-			if !matchFilter(topicName, filter) {
+			if !topic.MatchFilter(topicName, filter) {
 				continue
 			}
 			idx := b.sharedIdx[group] % len(clients)
@@ -1182,46 +1183,49 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 			if chosen == from {
 				continue
 			}
-			b.mu.RLock()
-			conn, ok1 := b.conns[chosen]
-			sess, ok2 := b.sessions[chosen]
-			b.mu.RUnlock()
-			if !ok1 || !ok2 {
-				if sess != nil && sess.ExpiryInterval != 0 {
-					if err := b.store.EnqueueOffline(bgCtx(), chosen, &persistence.Message{Topic: topicName, Payload: payload, QoS: qos}); err != nil {
-						slog.Warn("store EnqueueOffline failed", "err", err)
-					}
-				}
-				continue
-			}
-			q := qos
-			if storedQoS, ok := sess.Subscriptions["$share/"+group+"/"+filter]; ok && storedQoS < q {
-				q = storedQoS
-			}
-			pub := &codec.Packet{Type: codec.TypePUBLISH, Version: conn.Version(), Topic: topicName, QoS: q, Payload: payload}
-			if q > 0 {
-				if !sess.CanSend() {
-					if err := b.store.EnqueueOffline(bgCtx(), chosen, &persistence.Message{Topic: topicName, Payload: payload, QoS: qos}); err != nil {
-						slog.Warn("store EnqueueOffline failed", "err", err)
-					}
-					continue
-				}
-				pub.PacketID = sess.NextPacketID()
-				if pub.PacketID == 0 {
-					continue
-				}
-				sess.AddInflight(&session.InflightEntry{PacketID: pub.PacketID, QoS: q, Topic: topicName, Payload: payload})
-				b.scheduleRetry(chosen, pub.PacketID)
-			}
-			if sess.Version == codec.ProtocolV5 && props != nil && len(props.SubscriptionID) > 0 {
-				pub.PubProps = &codec.Properties{SubscriptionID: props.SubscriptionID}
-			}
-			mqttMessagesSent.Inc()
-			mqttInflight.Set(float64(sess.InflightCount()))
-			_ = b.sendPacket(conn, pub)
+			choices = append(choices, shChoice{group: group, filter: filter, client: chosen})
 		}
 	}
 	b.sharedMu.Unlock()
+	for _, ch := range choices {
+		b.mu.RLock()
+		conn, ok1 := b.conns[ch.client]
+		sess, ok2 := b.sessions[ch.client]
+		b.mu.RUnlock()
+		if !ok1 || !ok2 {
+			if sess != nil && sess.ExpiryInterval != 0 {
+				if err := b.store.EnqueueOffline(bgCtx(), ch.client, &persistence.Message{Topic: topicName, Payload: payload, QoS: qos}); err != nil {
+					slog.Warn("store EnqueueOffline failed", "err", err)
+				}
+			}
+			continue
+		}
+		q := qos
+		if storedQoS, ok := sess.Subscriptions["$share/"+ch.group+"/"+ch.filter]; ok && storedQoS < q {
+			q = storedQoS
+		}
+		pub := &codec.Packet{Type: codec.TypePUBLISH, Version: conn.Version(), Topic: topicName, QoS: q, Payload: payload}
+		if q > 0 {
+			if !sess.CanSend() {
+				if err := b.store.EnqueueOffline(bgCtx(), ch.client, &persistence.Message{Topic: topicName, Payload: payload, QoS: qos}); err != nil {
+					slog.Warn("store EnqueueOffline failed", "err", err)
+				}
+				continue
+			}
+			pub.PacketID = sess.NextPacketID()
+			if pub.PacketID == 0 {
+				continue
+			}
+			sess.AddInflight(&session.InflightEntry{PacketID: pub.PacketID, QoS: q, Topic: topicName, Payload: payload})
+			b.scheduleRetry(ch.client, pub.PacketID)
+		}
+		if sess.Version == codec.ProtocolV5 && props != nil && len(props.SubscriptionID) > 0 {
+			pub.PubProps = &codec.Properties{SubscriptionID: props.SubscriptionID}
+		}
+		mqttMessagesSent.Inc()
+		mqttInflight.Set(float64(sess.InflightCount()))
+		_ = b.sendPacket(conn, pub)
+	}
 	subs := b.trie.Match(topicName)
 	for _, sub := range subs {
 		if sub.ClientID == from && sub.NoLocal {
@@ -1450,7 +1454,10 @@ func (b *Broker) onClientDisconnect(clientID string, sess *session.Session, clea
 		slog.Info("client disconnect", "client", clientID, "clean", clean)
 		return
 	}
-	slog.Info("client disconnect", "client", clientID, "clean", clean, "node", sess.NodeID)
+	sess.Mu.Lock()
+	nodeID := sess.NodeID
+	sess.Mu.Unlock()
+	slog.Info("client disconnect", "client", clientID, "clean", clean, "node", nodeID)
 	sess.Mu.Lock()
 	expiry := sess.ExpiryInterval
 	subs := make([]string, 0, len(sess.Subscriptions))
@@ -1495,12 +1502,16 @@ func (b *Broker) onClientDisconnect(clientID string, sess *session.Session, clea
 }
 
 func (b *Broker) handleWill(sess *session.Session) {
+	sess.Mu.Lock()
 	if sess.Will == nil {
+		sess.Mu.Unlock()
 		return
 	}
 	w := sess.Will
+	clientID := sess.ClientID
 	sess.Will = nil
-	if err := b.hooks.ExecPublish(sess.ClientID, w.Topic, w.Payload, w.QoS, w.Retain); err != nil {
+	sess.Mu.Unlock()
+	if err := b.hooks.ExecPublish(clientID, w.Topic, w.Payload, w.QoS, w.Retain); err != nil {
 		return
 	}
 	if w.DelayInterval > 86400 {
@@ -1509,11 +1520,11 @@ func (b *Broker) handleWill(sess *session.Session) {
 	// delay
 	if w.DelayInterval > 0 {
 		time.AfterFunc(time.Duration(w.DelayInterval)*time.Second, func() {
-			b.routeMessage(w.Topic, w.Payload, w.QoS, w.Retain, nil, sess.ClientID)
+			b.routeMessage(w.Topic, w.Payload, w.QoS, w.Retain, nil, clientID)
 		})
 		return
 	}
-	b.routeMessage(w.Topic, w.Payload, w.QoS, w.Retain, nil, sess.ClientID)
+	b.routeMessage(w.Topic, w.Payload, w.QoS, w.Retain, nil, clientID)
 }
 
 //nolint:unused
@@ -1591,10 +1602,5 @@ func isSharedFilter(filter string) (bool, string, string) {
 }
 
 func matchFilter(t, filter string) bool {
-	// reuse trie for single match
-	tr := topic.NewTrie()
-	tr.Add(filter, "test", 0, false)
-	return len(tr.Match(t)) > 0
+	return topic.MatchFilter(t, filter)
 }
-
-var _ = fmt.Sprintf

@@ -164,3 +164,35 @@ func IsValidTopic(topic string) bool {
 	}
 	return true
 }
+
+// MatchFilter reports whether topic matches filter without allocating a Trie.
+// Stateless O(levels) check for hot paths (shared subs, retained replay).
+func MatchFilter(topic, filter string) bool {
+	if filter == "#" {
+		// # matches everything except $SYS
+		if strings.HasPrefix(topic, "$") {
+			return false
+		}
+		return true
+	}
+	if filter == topic {
+		return true
+	}
+	tLevels := strings.Split(topic, "/")
+	fLevels := strings.Split(filter, "/")
+	for i, f := range fLevels {
+		if f == "#" {
+			return i == len(fLevels)-1
+		}
+		if i >= len(tLevels) {
+			return false
+		}
+		if f == "+" {
+			continue
+		}
+		if f != tLevels[i] {
+			return false
+		}
+	}
+	return len(tLevels) == len(fLevels)
+}

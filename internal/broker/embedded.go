@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync/atomic"
 
 	"mqtt/internal/codec"
 	"mqtt/internal/persistence"
@@ -50,16 +51,17 @@ func (b *Broker) HandleConn(conn net.Conn) {
 	go b.handleRawConn(conn)
 }
 
-// Stats 返回当前 Broker 统计快照。
 func (b *Broker) Stats() BrokerStats {
-	b.statsMu.Lock()
-	defer b.statsMu.Unlock()
 	b.mu.RLock()
 	n := int64(len(b.conns))
 	b.mu.RUnlock()
-	s := b.stats
-	s.ClientsConnected = n
-	return s
+	return BrokerStats{
+		StartedAt:        b.stats.StartedAt,
+		MessagesReceived: atomic.LoadInt64(&b.stats.MessagesReceived),
+		MessagesSent:     atomic.LoadInt64(&b.stats.MessagesSent),
+		ClientsConnected: n,
+		ClientsTotal:     atomic.LoadInt64(&b.stats.ClientsTotal),
+	}
 }
 
 // Health 供嵌入式健康检查：检查 Redis、连接数、goroutine 阈值。

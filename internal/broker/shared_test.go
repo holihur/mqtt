@@ -2,6 +2,7 @@ package broker
 
 import (
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -81,9 +82,7 @@ func TestPrometheusMetrics(t *testing.T) {
 	_, _ = pub.Write(data)
 	time.Sleep(100 * time.Millisecond)
 	_ = pub.Close()
-	b.statsMu.Lock()
-	recv := b.stats.MessagesReceived
-	b.statsMu.Unlock()
+	recv := atomic.LoadInt64(&b.stats.MessagesReceived)
 	if recv == 0 {
 		t.Fatalf("metrics not incremented")
 	}
