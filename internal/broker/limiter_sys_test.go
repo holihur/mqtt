@@ -43,7 +43,7 @@ func TestLimiterLeakFix(t *testing.T) {
 		t.Fatalf("initial count 0, got %d", b.LimiterCount())
 	}
 	for i := 0; i < 100; i++ {
-		id := string(rune('a' + i%26)) + string(rune('0'+i%10)) + "-test"
+		id := string(rune('a'+i%26)) + string(rune('0'+i%10)) + "-test"
 		b.allowPublish(id)
 		b.allowSubscribe(id)
 	}
@@ -51,7 +51,7 @@ func TestLimiterLeakFix(t *testing.T) {
 		t.Fatalf("expected 100 limiters, got %d", b.LimiterCount())
 	}
 	for i := 0; i < 50; i++ {
-		id := string(rune('a' + i%26)) + string(rune('0'+i%10)) + "-test"
+		id := string(rune('a'+i%26)) + string(rune('0'+i%10)) + "-test"
 		b.removeLimiter(id)
 	}
 	if b.LimiterCount() != 50 {

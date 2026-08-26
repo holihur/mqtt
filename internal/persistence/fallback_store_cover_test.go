@@ -37,7 +37,7 @@ func (e *errStore) DequeueOffline(_ context.Context, _ string) ([]*Message, erro
 	return nil, e.err
 }
 func (e *errStore) ClearOffline(_ context.Context, _ string) error { return e.err }
-func (e *errStore) Close() error                                    { return e.err }
+func (e *errStore) Close() error                                   { return e.err }
 
 func TestFallbackStoreAllBranches(t *testing.T) {
 	ctx := context.Background()
