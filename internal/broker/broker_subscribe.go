@@ -2,6 +2,8 @@ package broker
 
 import (
 	"log/slog"
+	"strings"
+
 	"mqtt/internal/codec"
 	"mqtt/internal/session"
 	"mqtt/internal/topic"
@@ -30,7 +32,7 @@ func (b *Broker) handleSubscribe(conn *transport.Conn, sess *session.Session, pk
 			codes = append(codes, 0x80) // failure
 			continue
 		}
-		if sub.Filter == "$SYS/#" {
+		if isSysFilter(sub.Filter) {
 			mqttPacketDropped.WithLabelValues("sys_sub_denied").Inc()
 			if sess.Version == codec.ProtocolV5 {
 				codes = append(codes, 0x87)
@@ -49,6 +51,15 @@ func (b *Broker) handleSubscribe(conn *transport.Conn, sess *session.Session, pk
 			continue
 		}
 		if isShared, group, realFilter := isSharedFilter(sub.Filter); isShared {
+			if isSysFilter(realFilter) {
+				mqttPacketDropped.WithLabelValues("sys_sub_denied").Inc()
+				if sess.Version == codec.ProtocolV5 {
+					codes = append(codes, 0x87)
+				} else {
+					codes = append(codes, 0x80)
+				}
+				continue
+			}
 			if !topic.IsValidFilter(realFilter) {
 				codes = append(codes, 0x80)
 				continue
@@ -203,6 +214,10 @@ func isSharedFilter(filter string) (bool, string, string) {
 		return true, group, realFilter
 	}
 	return false, "", ""
+}
+
+func isSysFilter(filter string) bool {
+	return filter == "$SYS" || strings.HasPrefix(filter, "$SYS/")
 }
 
 func matchFilter(t, filter string) bool {

@@ -74,6 +74,7 @@ type clientLimiter struct {
 	publishCount   int
 	subscribeCount int
 	window         time.Time
+	lastSeen       time.Time
 }
 
 type Broker struct {
@@ -221,6 +222,7 @@ func (b *Broker) onClientDisconnect(clientID string, sess *session.Session, clea
 	b.mu.Lock()
 	delete(b.conns, clientID)
 	b.mu.Unlock()
+	b.removeLimiter(clientID)
 	if sess == nil {
 		slog.Info("client disconnect", "client", clientID, "clean", clean)
 		return
@@ -296,6 +298,55 @@ func (b *Broker) handleWill(sess *session.Session) {
 		return
 	}
 	b.routeMessage(w.Topic, w.Payload, w.QoS, w.Retain, nil, clientID)
+}
+
+func (b *Broker) removeLimiter(clientID string) {
+	b.limitMu.Lock()
+	delete(b.limiters, clientID)
+	b.limitMu.Unlock()
+}
+
+// LimiterCount returns number of entries in limiters map (for metrics/tests).
+func (b *Broker) LimiterCount() int {
+	b.limitMu.Lock()
+	defer b.limitMu.Unlock()
+	return len(b.limiters)
+}
+
+// cleanupLimiters removes limiters idle longer than idle duration.
+// Returns number of removed entries. Exposed for testing.
+func (b *Broker) cleanupLimiters(idle time.Duration) int {
+	now := time.Now()
+	b.limitMu.Lock()
+	defer b.limitMu.Unlock()
+	removed := 0
+	for id, lim := range b.limiters {
+		lim.mu.Lock()
+		last := lim.lastSeen
+		if last.IsZero() {
+			last = lim.window
+		}
+		idleTime := now.Sub(last)
+		lim.mu.Unlock()
+		if idleTime > idle {
+			delete(b.limiters, id)
+			removed++
+		}
+	}
+	return removed
+}
+
+func (b *Broker) limiterJanitor(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.cleanupLimiters(10 * time.Minute)
+		}
+	}
 }
 
 //nolint:unused

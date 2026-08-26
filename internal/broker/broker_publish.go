@@ -45,40 +45,42 @@ func (b *Broker) sendPacket(conn *transport.Conn, pkt *codec.Packet) error {
 }
 
 func (b *Broker) allowPublish(clientID string) bool {
+	now := time.Now()
 	b.limitMu.Lock()
 	lim, ok := b.limiters[clientID]
 	if !ok {
-		lim = &clientLimiter{window: time.Now()}
+		lim = &clientLimiter{window: now, lastSeen: now}
 		b.limiters[clientID] = lim
 	}
 	b.limitMu.Unlock()
 	lim.mu.Lock()
 	defer lim.mu.Unlock()
-	now := time.Now()
 	if now.Sub(lim.window) >= time.Second {
 		lim.window = now
 		lim.publishCount = 0
 	}
 	lim.publishCount++
+	lim.lastSeen = now
 	return lim.publishCount <= b.cfg.MaxPublishPerSec
 }
 
 func (b *Broker) allowSubscribe(clientID string) bool {
+	now := time.Now()
 	b.limitMu.Lock()
 	lim, ok := b.limiters[clientID]
 	if !ok {
-		lim = &clientLimiter{window: time.Now()}
+		lim = &clientLimiter{window: now, lastSeen: now}
 		b.limiters[clientID] = lim
 	}
 	b.limitMu.Unlock()
 	lim.mu.Lock()
 	defer lim.mu.Unlock()
-	now := time.Now()
 	if now.Sub(lim.window) >= time.Second {
 		lim.window = now
 		lim.subscribeCount = 0
 	}
 	lim.subscribeCount++
+	lim.lastSeen = now
 	return lim.subscribeCount <= b.cfg.MaxSubscribePerSec
 }
 
