@@ -62,7 +62,8 @@
 
 | 特性 | 说明 |
 |---|---|
-| Retain | `SaveRetained/DeleteRetained/ListRetained` 落 Redis（`mqtt:retain:`），`PUBLISH retain + payload==""` 清空 |
+| Retain | `SaveRetained/DeleteRetained/ListRetained/GetRetainedStats` 落 Redis（`mqtt:retain:`），`PUBLISH retain + payload==""` 清空；配额见 §11 |
+| 配额 | `MaxRetainedMessages 10000 / MaxRetainedSize 1GB / MaxRetainPerTopic 1000 / MaxRetainSizePerTopic 100MB`，超限 `PUBACK 0x97` + `mqtt_retain_quota_exceeded_total{reason}` |
 | Will | `Will.Topic/Payload/QoS/Retain/DelayInterval`，`DelayInterval ≤86400` 限幅，`AfterFunc` 延迟投递，`$SYS/` 非法直接丢弃 |
 | 遗嘱 ACL | `handleWill` 前二次 `Authorize` |
 
@@ -125,9 +126,11 @@
 
 - `MQTT 5 AUTH` 报文仅预留编解码，未接入鉴权流程
 - `Shared Subscription` 集群一致性哈希（当前仅单机内存轮询，未跨 Redis 选主）
-- `Retain` 全局/单 topic 配额（当前无配额）
+- `Retain` `RH=1/2` 严格语义与 `MessageExpiry` 自动过期（当前均视为 `RH=0` 透传）
 - `WAL` 本地持久化（当前 `Memory → Redis` 两级，`Pebble/Badger` 在 Not yet specified）
 - 多租户计费、前台控制台
 
+> `Retain` 全局/单 topic 配额已于 #2 落地（见 §11 与 `docs/mqtt-support.md §11`），上条“无配额”已废止。
+
 ---
-> 详见 `README.md` 架构图与 `docs/compliance.md` Paho 8 用例、`docs/bench.md` 基线。
+> 详见 `README.md` 架构图、`docs/mqtt-support.md` 版本×特性矩阵、`docs/compliance.md` Paho 8 用例、`docs/bench.md` 基线。
