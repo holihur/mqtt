@@ -2,17 +2,38 @@ package persistence
 
 import (
 	"context"
+	"time"
+
 	"mqtt/internal/session"
 )
 
 // Message for persistence (normalized)
 type Message struct {
-	Topic   string
-	Payload []byte
-	QoS     byte
-	Retain  bool
-	From    string
+	Topic          string
+	Payload        []byte
+	QoS            byte
+	Retain         bool
+	From           string
+	CreatedAt      int64  // unix millis for expiry calc
+	ExpiryInterval uint32 // 0 means no expiry
 }
+
+func (m *Message) IsExpired() bool {
+	if m.ExpiryInterval == 0 {
+		return false
+	}
+	if m.CreatedAt == 0 {
+		return false
+	}
+	expiryTime := m.CreatedAt + int64(m.ExpiryInterval)*1000
+	return expiryTime < timeNowMillis()
+}
+
+func timeNowMillis() int64 {
+	return timeNow().UnixMilli()
+}
+
+var timeNow = func() time.Time { return time.Now() }
 
 type RetainStats struct {
 	TotalMessages int

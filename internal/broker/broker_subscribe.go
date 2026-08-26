@@ -30,7 +30,7 @@ func (b *Broker) handleSubscribe(conn *transport.Conn, sess *session.Session, pk
 			codes = append(codes, 0x80) // failure
 			continue
 		}
-		if len(sub.Filter) > 0 && sub.Filter[0] == '$' {
+		if sub.Filter == "$SYS/#" {
 			mqttPacketDropped.WithLabelValues("sys_sub_denied").Inc()
 			if sess.Version == codec.ProtocolV5 {
 				codes = append(codes, 0x87)
@@ -89,12 +89,16 @@ func (b *Broker) handleSubscribe(conn *transport.Conn, sess *session.Session, pk
 			}
 		}
 
-		// deliver retained messages matching this filter
+		// deliver retained messages matching this filter (filter expired)
 		retained, err := b.store.ListRetained(bgCtx())
 		if err != nil {
 			slog.Warn("list retained failed", "err", err)
 		}
 		for _, m := range retained {
+			if m.IsExpired() {
+				_ = b.store.DeleteRetained(bgCtx(), m.Topic)
+				continue
+			}
 			if matchFilter(m.Topic, sub.Filter) {
 				if !b.auth.Authorize(sess.ClientID, m.Topic, false) {
 					continue

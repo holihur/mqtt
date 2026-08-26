@@ -204,12 +204,23 @@ func (b *Broker) handlePublish(conn *transport.Conn, sess *session.Session, pkt 
 		return
 	}
 
-	// Retain handling with quota
+	var msgExpiry uint32
+	var msgCreatedAt int64
+	if pkt.PubProps != nil && pkt.PubProps.MessageExpiryInterval != nil {
+		msgExpiry = *pkt.PubProps.MessageExpiryInterval
+		msgCreatedAt = time.Now().UnixMilli()
+		if msgExpiry == 0 {
+			mqttPacketDropped.WithLabelValues("message_expiry").Inc()
+		}
+	}
+	// Retain handling with quota and expiry
 	if pkt.Retain {
 		if len(pkt.Payload) == 0 {
 			if err := b.store.DeleteRetained(bgCtx(), topicName); err != nil {
 				slog.Warn("store DeleteRetained failed", "err", err)
 			}
+		} else if msgExpiry == 0 && pkt.PubProps != nil && pkt.PubProps.MessageExpiryInterval != nil {
+			// expired for retain, skip store
 		} else {
 			if exceeded, reason := b.checkRetainQuota(topicName, pkt.Payload); exceeded {
 				slog.Warn("retain quota exceeded", "reason", reason, "topic", topicName, "client", sess.ClientID, "payloadSize", len(pkt.Payload))
@@ -222,8 +233,14 @@ func (b *Broker) handlePublish(conn *transport.Conn, sess *session.Session, pkt 
 				}
 				return
 			}
-			if err := b.store.SaveRetained(bgCtx(), topicName, &persistence.Message{Topic: topicName, Payload: pkt.Payload, QoS: pkt.QoS, Retain: true}); err != nil {
+			msg := &persistence.Message{Topic: topicName, Payload: pkt.Payload, QoS: pkt.QoS, Retain: true, CreatedAt: msgCreatedAt, ExpiryInterval: msgExpiry}
+			if err := b.store.SaveRetained(bgCtx(), topicName, msg); err != nil {
 				slog.Warn("store SaveRetained failed", "err", err)
+			} else if msgExpiry > 0 {
+				topicCopy := topicName
+				time.AfterFunc(time.Duration(msgExpiry)*time.Second, func() {
+					_ = b.store.DeleteRetained(context.Background(), topicCopy)
+				})
 			}
 		}
 	}
@@ -260,6 +277,9 @@ func (b *Broker) routeMessage(topicName string, payload []byte, qos byte, retain
 }
 
 func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props *codec.Properties, from string) {
+	if props != nil && props.MessageExpiryInterval != nil && *props.MessageExpiryInterval == 0 {
+		mqttPacketDropped.WithLabelValues("message_expiry").Inc()
+	}
 	type shChoice struct {
 		group  string
 		filter string
@@ -292,8 +312,17 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 		b.mu.RUnlock()
 		if !ok1 || !ok2 {
 			if sess != nil && sess.ExpiryInterval != 0 {
-				if err := b.store.EnqueueOffline(bgCtx(), ch.client, &persistence.Message{Topic: topicName, Payload: payload, QoS: qos}); err != nil {
-					slog.Warn("store EnqueueOffline failed", "err", err)
+				if props != nil && props.MessageExpiryInterval != nil && *props.MessageExpiryInterval == 0 {
+				} else {
+					var expiry uint32
+					var created int64
+					if props != nil && props.MessageExpiryInterval != nil {
+						expiry = *props.MessageExpiryInterval
+						created = time.Now().UnixMilli()
+					}
+					if err := b.store.EnqueueOffline(bgCtx(), ch.client, &persistence.Message{Topic: topicName, Payload: payload, QoS: qos, CreatedAt: created, ExpiryInterval: expiry}); err != nil {
+						slog.Warn("store EnqueueOffline failed", "err", err)
+					}
 				}
 			}
 			continue
@@ -305,8 +334,17 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 		pub := &codec.Packet{Type: codec.TypePUBLISH, Version: conn.Version(), Topic: topicName, QoS: q, Payload: payload}
 		if q > 0 {
 			if !sess.CanSend() {
-				if err := b.store.EnqueueOffline(bgCtx(), ch.client, &persistence.Message{Topic: topicName, Payload: payload, QoS: qos}); err != nil {
-					slog.Warn("store EnqueueOffline failed", "err", err)
+				if props != nil && props.MessageExpiryInterval != nil && *props.MessageExpiryInterval == 0 {
+				} else {
+					var expiry2 uint32
+					var created2 int64
+					if props != nil && props.MessageExpiryInterval != nil {
+						expiry2 = *props.MessageExpiryInterval
+						created2 = time.Now().UnixMilli()
+					}
+					if err := b.store.EnqueueOffline(bgCtx(), ch.client, &persistence.Message{Topic: topicName, Payload: payload, QoS: qos, CreatedAt: created2, ExpiryInterval: expiry2}); err != nil {
+						slog.Warn("store EnqueueOffline failed", "err", err)
+					}
 				}
 				continue
 			}
@@ -334,10 +372,18 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 		sess, sok := b.sessions[sub.ClientID]
 		b.mu.RUnlock()
 		if !ok || !sok {
-			// offline: enqueue if session expiry >0
 			if sess != nil && sess.ExpiryInterval != 0 {
-				if err := b.store.EnqueueOffline(bgCtx(), sub.ClientID, &persistence.Message{Topic: topicName, Payload: payload, QoS: qos}); err != nil {
-					slog.Warn("store EnqueueOffline failed", "err", err)
+				if props != nil && props.MessageExpiryInterval != nil && *props.MessageExpiryInterval == 0 {
+				} else {
+					var expiry3 uint32
+					var created3 int64
+					if props != nil && props.MessageExpiryInterval != nil {
+						expiry3 = *props.MessageExpiryInterval
+						created3 = time.Now().UnixMilli()
+					}
+					if err := b.store.EnqueueOffline(bgCtx(), sub.ClientID, &persistence.Message{Topic: topicName, Payload: payload, QoS: qos, CreatedAt: created3, ExpiryInterval: expiry3}); err != nil {
+						slog.Warn("store EnqueueOffline failed", "err", err)
+					}
 				}
 			}
 			continue
@@ -357,8 +403,17 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 		}
 		if deliverQoS > 0 {
 			if !sess.CanSend() {
-				if err := b.store.EnqueueOffline(bgCtx(), sub.ClientID, &persistence.Message{Topic: topicName, Payload: payload, QoS: qos}); err != nil {
-					slog.Warn("store EnqueueOffline failed", "err", err)
+				if props != nil && props.MessageExpiryInterval != nil && *props.MessageExpiryInterval == 0 {
+				} else {
+					var expiry4 uint32
+					var created4 int64
+					if props != nil && props.MessageExpiryInterval != nil {
+						expiry4 = *props.MessageExpiryInterval
+						created4 = time.Now().UnixMilli()
+					}
+					if err := b.store.EnqueueOffline(bgCtx(), sub.ClientID, &persistence.Message{Topic: topicName, Payload: payload, QoS: qos, CreatedAt: created4, ExpiryInterval: expiry4}); err != nil {
+						slog.Warn("store EnqueueOffline failed", "err", err)
+					}
 				}
 				continue
 			}

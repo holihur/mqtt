@@ -96,6 +96,28 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 		_ = conn.Close()
 		return
 	}
+	if sessionExisted {
+		sess.Mu.Lock()
+		oldUsername := sess.Username
+		sess.Mu.Unlock()
+		if oldUsername != "" && pkt.Username != oldUsername {
+			b.mu.RLock()
+			_, hasOldConn := b.conns[clientID]
+			b.mu.RUnlock()
+			if hasOldConn {
+				mqttPacketDropped.WithLabelValues("session_hijack").Inc()
+				slog.Warn("session hijack attempt", "client", clientID, "oldUser", oldUsername, "newUser", pkt.Username, "addr", raw.RemoteAddr().String())
+				reason := byte(0x04)
+				if pkt.Version == codec.ProtocolV5 {
+					reason = 0x86
+				}
+				resp := &codec.Packet{Type: codec.TypeCONNACK, Version: pkt.Version, ReasonCode: reason}
+				_ = b.sendPacket(conn, resp)
+				_ = conn.Close()
+				return
+			}
+		}
+	}
 	sess.Mu.Lock()
 	sess.ClientID = clientID
 	sess.Version = pkt.Version
@@ -143,27 +165,6 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 		_ = b.sendPacket(conn, resp)
 		_ = conn.Close()
 		return
-	}
-	b.mu.RLock()
-	oldSess, hasOldSess := b.sessions[clientID]
-	_, hasOldConn := b.conns[clientID]
-	b.mu.RUnlock()
-	if hasOldConn && hasOldSess && oldSess != nil {
-		oldSess.Mu.Lock()
-		oldUsername := oldSess.Username
-		oldSess.Mu.Unlock()
-		if oldUsername != "" && pkt.Username != oldUsername {
-			mqttPacketDropped.WithLabelValues("session_hijack").Inc()
-			slog.Warn("session hijack attempt", "client", clientID, "oldUser", oldUsername, "newUser", pkt.Username, "addr", raw.RemoteAddr().String())
-			reason := byte(0x04)
-			if pkt.Version == codec.ProtocolV5 {
-				reason = 0x86
-			}
-			resp := &codec.Packet{Type: codec.TypeCONNACK, Version: pkt.Version, ReasonCode: reason}
-			_ = b.sendPacket(conn, resp)
-			_ = conn.Close()
-			return
-		}
 	}
 	// Kick existing connection with same clientID
 	b.mu.Lock()
@@ -238,12 +239,16 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 
 	// Replay retained for existing subs? Not needed until SUBSCRIBE
 
-	// Replay offline queue
+	// Replay offline queue (filter expired)
 	offline, err := b.store.DequeueOffline(bgCtx(), clientID)
 	if err != nil {
 		slog.Warn("dequeue offline failed", "client", clientID, "err", err)
 	} else if len(offline) > 0 {
 		for _, m := range offline {
+			if m.IsExpired() {
+				mqttPacketDropped.WithLabelValues("message_expiry").Inc()
+				continue
+			}
 			pub := &codec.Packet{
 				Type:    codec.TypePUBLISH,
 				Version: pkt.Version,
