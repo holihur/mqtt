@@ -55,6 +55,7 @@ func main() {
 		maxRetainSizePerTopic = flag.Int64("max-retain-size-per-topic", 100<<20, "max retained size per topic in bytes")
 		walDir                = flag.String("wal-dir", "./data/wal", "WAL dir (pebble), \"-\" to disable; any Store impl can be injected via WithStore")
 		walEnabled            = flag.Bool("wal", true, "enable WAL (default true, uses Store interface, pebble is one impl)")
+		wsAllowOrigins        = flag.String("ws-allow-origins", "", "WS allowed origins, comma separated or \"*\" for all; empty means same-origin + empty Origin only")
 	)
 	flag.Parse()
 	logger.Init(*logLevel)
@@ -110,6 +111,7 @@ func main() {
 	if *walEnabled && *walDir != "" && *walDir != "-" {
 		walDirCfg = *walDir
 	}
+	wsOrigins := splitAddrs(*wsAllowOrigins)
 	cfg := broker.Config{
 		NodeID:                *nodeID,
 		TCPAddr:               *tcpAddr,
@@ -127,6 +129,7 @@ func main() {
 		MaxRetainPerTopic:     *maxRetainPerTopic,
 		MaxRetainSizePerTopic: *maxRetainSizePerTopic,
 		WalDir:                walDirCfg,
+		WsAllowOrigins:        wsOrigins,
 	}
 	b, err := broker.NewWithOptions(cfg, broker.WithStore(store))
 	if err != nil {

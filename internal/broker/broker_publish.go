@@ -315,7 +315,7 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 				continue
 			}
 			sess.AddInflight(&session.InflightEntry{PacketID: pub.PacketID, QoS: q, Topic: topicName, Payload: payload})
-			b.scheduleRetry(ch.client, pub.PacketID)
+			b.scheduleRetry(ch.client, pub.PacketID, 0)
 		}
 		if sess.Version == codec.ProtocolV5 && props != nil && len(props.SubscriptionID) > 0 {
 			pub.PubProps = &codec.Properties{SubscriptionID: props.SubscriptionID}
@@ -368,7 +368,7 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 			}
 			e := &session.InflightEntry{PacketID: pub.PacketID, QoS: deliverQoS, Topic: topicName, Payload: payload}
 			sess.AddInflight(e)
-			b.scheduleRetry(sess.ClientID, pub.PacketID)
+			b.scheduleRetry(sess.ClientID, pub.PacketID, 0)
 		}
 		// v5 subscription ID
 		if sess.Version == codec.ProtocolV5 && props != nil && len(props.SubscriptionID) > 0 {
@@ -382,7 +382,18 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 	}
 }
 
-func (b *Broker) scheduleRetry(clientID string, packetID uint16) {
+func (b *Broker) scheduleRetry(clientID string, packetID uint16, retries int) {
+	if retries >= 5 {
+		b.mu.RLock()
+		sess, ok := b.sessions[clientID]
+		b.mu.RUnlock()
+		if ok {
+			sess.RemoveInflight(packetID)
+			mqttPacketDropped.WithLabelValues("retry_exceeded").Inc()
+			slog.Warn("retry exceeded, dropping inflight", "client", clientID, "packetID", packetID)
+		}
+		return
+	}
 	time.AfterFunc(20*time.Second, func() {
 		b.mu.RLock()
 		sess, ok1 := b.sessions[clientID]
@@ -395,7 +406,7 @@ func (b *Broker) scheduleRetry(clientID string, packetID uint16) {
 			e.Dup = true
 			pub := &codec.Packet{Type: codec.TypePUBLISH, Version: conn.Version(), Topic: e.Topic, QoS: e.QoS, Payload: e.Payload, PacketID: packetID, Dup: true}
 			_ = b.sendPacket(conn, pub)
-			b.scheduleRetry(clientID, packetID)
+			b.scheduleRetry(clientID, packetID, retries+1)
 		}
 	})
 }

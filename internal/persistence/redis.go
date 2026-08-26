@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
+
 	"mqtt/internal/session"
 
 	"github.com/redis/go-redis/v9"
@@ -67,9 +69,11 @@ func (r *RedisStore) SaveSession(ctx context.Context, s *session.Session) error 
 	if err != nil {
 		return err
 	}
-	// Use expiry interval if set and not max
-	// For simplicity, store without TTL; expiry handled by manager
-	return r.cli.Set(ctx, r.key("session", clientIDKey(s.ClientID)), data, 0).Err()
+	ttl := time.Duration(0)
+	if s.ExpiryInterval != 0 && s.ExpiryInterval != 0xFFFFFFFF {
+		ttl = time.Duration(s.ExpiryInterval) * time.Second
+	}
+	return r.cli.Set(ctx, r.key("session", clientIDKey(s.ClientID)), data, ttl).Err()
 }
 func clientIDKey(id string) string { return id }
 

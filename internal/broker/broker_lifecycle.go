@@ -170,6 +170,7 @@ func (b *Broker) Start(ctx context.Context) error {
 	}
 	tlsCfg := b.cfg.TLSConfig
 	b.listener = transport.NewListener(b.cfg.TCPAddr, tlsCfg, b.cfg.WSAddr)
+	b.listener.SetWsAllowOrigins(b.cfg.WsAllowOrigins)
 	if b.customListener != nil {
 		b.listener.SetCustomListener(b.customListener)
 	}
@@ -194,6 +195,7 @@ func (b *Broker) StartAsync(ctx context.Context) error {
 	}
 	tlsCfg := b.cfg.TLSConfig
 	b.listener = transport.NewListener(b.cfg.TCPAddr, tlsCfg, b.cfg.WSAddr)
+	b.listener.SetWsAllowOrigins(b.cfg.WsAllowOrigins)
 	if b.customListener != nil {
 		b.listener.SetCustomListener(b.customListener)
 	}

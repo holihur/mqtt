@@ -58,6 +58,7 @@ type Config struct {
 	MaxRetainPerTopic     int
 	MaxRetainSizePerTopic int64
 	WalDir                string
+	WsAllowOrigins        []string
 }
 
 type BrokerStats struct {

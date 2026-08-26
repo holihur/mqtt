@@ -47,8 +47,28 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 	}
 	clientID := pkt.ClientID
 	if clientID == "" {
-		// v3: if clean session true, broker may assign id. For simplicity, generate
+		if !pkt.ConnectFlags.CleanSession && pkt.Version != codec.ProtocolV5 {
+			reason := byte(0x02)
+			resp := &codec.Packet{Type: codec.TypeCONNACK, Version: pkt.Version, ReasonCode: reason}
+			_ = b.sendPacket(conn, resp)
+			_ = conn.Close()
+			return
+		}
 		clientID = "auto-" + uuid.NewString()[:8]
+	}
+	if len(clientID) > 64 {
+		mqttPacketDropped.WithLabelValues("clientid_too_long").Inc()
+		reason := byte(0x02)
+		if pkt.Version == codec.ProtocolV5 {
+			reason = 0x85
+		}
+		resp := &codec.Packet{Type: codec.TypeCONNACK, Version: pkt.Version, ReasonCode: reason}
+		_ = b.sendPacket(conn, resp)
+		_ = conn.Close()
+		return
+	}
+	if pkt.Version != codec.ProtocolV5 && len(clientID) > 23 {
+		slog.Warn("clientID exceeds 23 chars for v3", "client", clientID, "len", len(clientID))
 	}
 	conn.SetClientID(clientID)
 	conn.SetVersion(pkt.Version)
@@ -82,6 +102,7 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 	sess.KeepAlive = pkt.KeepAlive
 	sess.Connected = true
 	sess.NodeID = b.nodeID
+	sess.Username = pkt.Username
 	if pkt.Version == codec.ProtocolV5 && pkt.Properties != nil {
 		if pkt.Properties.ReceiveMaximum != nil {
 			sess.ReceiveMaximum = *pkt.Properties.ReceiveMaximum
@@ -123,6 +144,27 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 		_ = conn.Close()
 		return
 	}
+	b.mu.RLock()
+	oldSess, hasOldSess := b.sessions[clientID]
+	_, hasOldConn := b.conns[clientID]
+	b.mu.RUnlock()
+	if hasOldConn && hasOldSess && oldSess != nil {
+		oldSess.Mu.Lock()
+		oldUsername := oldSess.Username
+		oldSess.Mu.Unlock()
+		if oldUsername != "" && pkt.Username != oldUsername {
+			mqttPacketDropped.WithLabelValues("session_hijack").Inc()
+			slog.Warn("session hijack attempt", "client", clientID, "oldUser", oldUsername, "newUser", pkt.Username, "addr", raw.RemoteAddr().String())
+			reason := byte(0x04)
+			if pkt.Version == codec.ProtocolV5 {
+				reason = 0x86
+			}
+			resp := &codec.Packet{Type: codec.TypeCONNACK, Version: pkt.Version, ReasonCode: reason}
+			_ = b.sendPacket(conn, resp)
+			_ = conn.Close()
+			return
+		}
+	}
 	// Kick existing connection with same clientID
 	b.mu.Lock()
 	if old, ok := b.conns[clientID]; ok {
@@ -139,6 +181,9 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 	if pkt.Will != nil {
 		if pkt.Will.Topic == "" || strings.HasPrefix(pkt.Will.Topic, "$SYS/") {
 			// invalid will topic
+		} else if len(pkt.Will.Payload) > b.cfg.MaxPacketSize || len(pkt.Will.Topic)+len(pkt.Will.Payload) > b.cfg.MaxPacketSize {
+			slog.Warn("will payload too large", "client", clientID, "size", len(pkt.Will.Payload))
+			mqttPacketDropped.WithLabelValues("will_too_large").Inc()
 		} else {
 			delay := pkt.Will.DelayInterval
 			if delay > 86400 {

@@ -179,6 +179,14 @@ func WithWALStore(s persistence.Store) Option {
 	}
 }
 
+// WithWsAllowOrigins 设置 WebSocket 允许的 Origin 白名单；空表示仅同源+空 Origin，含 "*" 表示放行全部。
+func WithWsAllowOrigins(origins []string) Option {
+	return func(b *Broker) error {
+		b.cfg.WsAllowOrigins = origins
+		return nil
+	}
+}
+
 // WithConfig 合并一个完整 Config（非零字段覆盖）。
 func WithConfig(cfg Config) Option {
 	return func(b *Broker) error {
@@ -248,6 +256,9 @@ func WithConfig(cfg Config) Option {
 			} else {
 				b.cfg.WalDir = cfg.WalDir
 			}
+		}
+		if len(cfg.WsAllowOrigins) > 0 {
+			b.cfg.WsAllowOrigins = cfg.WsAllowOrigins
 		}
 		// AllowAnonymous 为 bool，WithConfig 视为显式覆盖需调用方自行用 WithAllowAnonymous
 		return nil

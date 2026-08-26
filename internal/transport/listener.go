@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -18,13 +20,72 @@ type Listener struct {
 	ln             net.Listener
 	customListener net.Listener
 	wsSrv          *http.Server
+
+	wsAllowOrigins map[string]struct{}
+	wsAllowAll     bool
 }
 
 func NewListener(addr string, tlsCfg *tls.Config, wsAddr string) *Listener {
-	return &Listener{addr: addr, tlsCfg: tlsCfg, wsAddr: wsAddr}
+	return &Listener{addr: addr, tlsCfg: tlsCfg, wsAddr: wsAddr, wsAllowOrigins: make(map[string]struct{})}
 }
 
 func (l *Listener) SetCustomListener(ln net.Listener) { l.customListener = ln }
+
+func (l *Listener) SetWsAllowOrigins(origins []string) {
+	m := make(map[string]struct{}, len(origins))
+	allowAll := false
+	for _, o := range origins {
+		o = strings.TrimSpace(o)
+		if o == "" {
+			continue
+		}
+		if o == "*" {
+			allowAll = true
+			continue
+		}
+		if u, err := url.Parse(o); err == nil && u.Host != "" {
+			m[u.Host] = struct{}{}
+			m[u.Hostname()] = struct{}{}
+			m[o] = struct{}{}
+		} else {
+			m[o] = struct{}{}
+		}
+	}
+	l.wsAllowOrigins = m
+	l.wsAllowAll = allowAll
+}
+
+func (l *Listener) checkOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	if l.wsAllowAll {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	originHost := u.Host
+	if originHost == r.Host {
+		return true
+	}
+	if _, ok := l.wsAllowOrigins[origin]; ok {
+		return true
+	}
+	if _, ok := l.wsAllowOrigins[originHost]; ok {
+		return true
+	}
+	if _, ok := l.wsAllowOrigins[u.Hostname()]; ok {
+		return true
+	}
+	return false
+}
+
+func (l *Listener) upgrader() websocket.Upgrader {
+	return websocket.Upgrader{CheckOrigin: l.checkOrigin}
+}
 
 func (l *Listener) Addr() string {
 	if l.ln != nil {
@@ -113,29 +174,34 @@ func (l *Listener) Listen(ctx context.Context, handle func(net.Conn)) error {
 	}
 }
 
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return r.Header.Get("Origin") == "" },
-}
-
 func (l *Listener) serveWS(ctx context.Context, handle func(net.Conn)) {
+	upgrader := l.upgrader()
+	wsSem := make(chan struct{}, 20000)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		ws, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
+	handleWS := func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case wsSem <- struct{}{}:
+		default:
+			http.Error(w, "too many connections", http.StatusServiceUnavailable)
 			return
 		}
-		conn := &wsConn{Conn: ws}
-		handle(conn)
-	})
-	mux.HandleFunc("/mqtt", func(w http.ResponseWriter, r *http.Request) {
 		ws, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
+			<-wsSem
 			return
 		}
-		conn := &wsConn{Conn: ws}
+		conn := &wsConn{Conn: ws, sem: wsSem}
 		handle(conn)
-	})
-	srv := &http.Server{Addr: l.wsAddr, Handler: mux}
+	}
+	mux.HandleFunc("/", handleWS)
+	mux.HandleFunc("/mqtt", handleWS)
+	srv := &http.Server{
+		Addr:         l.wsAddr,
+		Handler:      mux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
 	l.wsSrv = srv
 	go func() {
 		<-ctx.Done()
@@ -149,6 +215,7 @@ func (l *Listener) serveWS(ctx context.Context, handle func(net.Conn)) {
 type wsConn struct {
 	*websocket.Conn
 	reader *wsReader
+	sem    chan struct{}
 }
 
 type wsReader struct {
@@ -181,6 +248,17 @@ func (w *wsConn) Write(b []byte) (int, error) {
 		return 0, err
 	}
 	return len(b), nil
+}
+
+func (w *wsConn) Close() error {
+	err := w.Conn.Close()
+	if w.sem != nil {
+		select {
+		case <-w.sem:
+		default:
+		}
+	}
+	return err
 }
 func (w *wsConn) SetDeadline(t time.Time) error {
 	if err := w.Conn.SetReadDeadline(t); err != nil {

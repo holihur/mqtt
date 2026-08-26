@@ -30,6 +30,15 @@ func (b *Broker) handleSubscribe(conn *transport.Conn, sess *session.Session, pk
 			codes = append(codes, 0x80) // failure
 			continue
 		}
+		if len(sub.Filter) > 0 && sub.Filter[0] == '$' {
+			mqttPacketDropped.WithLabelValues("sys_sub_denied").Inc()
+			if sess.Version == codec.ProtocolV5 {
+				codes = append(codes, 0x87)
+			} else {
+				codes = append(codes, 0x80)
+			}
+			continue
+		}
 		if err := b.hooks.ExecSubscribe(sess.ClientID, sub.Filter, sub.QoS); err != nil {
 			mqttPacketDropped.WithLabelValues("hook").Inc()
 			if sess.Version == codec.ProtocolV5 {

@@ -16,31 +16,24 @@ func storeCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 2*time.Second)
 }
 
-//nolint:govet
-
 func bgCtx() context.Context {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_ = cancel
-	return ctx
+	return context.Background()
 }
 
 func loadTLSConfig(certFile, keyFile, caFile string) (*tls.Config, error) {
 	if certFile == "" || keyFile == "" {
 		return nil, nil
 	}
-	cfg := &tls.Config{
-		MinVersion: tls.VersionTLS12,
-		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-			if err != nil {
-				return nil, err
-			}
-			return &cert, nil
-		},
-	}
-	// preload to validate
-	if _, err := tls.LoadX509KeyPair(certFile, keyFile); err != nil {
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
 		return nil, err
+	}
+	cfg := &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{cert},
+	}
+	cfg.GetCertificate = func(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
+		return &cfg.Certificates[0], nil
 	}
 	if caFile != "" {
 		caData, err := os.ReadFile(caFile)
