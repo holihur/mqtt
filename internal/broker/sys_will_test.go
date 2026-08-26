@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"mqtt/internal/codec"
-	"mqtt/internal/parser"
 	"mqtt/internal/persistence"
 )
 
@@ -80,45 +79,31 @@ func TestSysMetrics(t *testing.T) {
 	subPkt := &codec.Packet{Type: codec.TypeSUBSCRIBE, Version: codec.ProtocolV311, PacketID: 1, Subscriptions: []codec.Subscription{{Filter: "$SYS/broker/#", QoS: 0}}}
 	data, _ = codec.Encode(subPkt)
 	_, _ = sub.Write(data)
-	_, _ = sub.Read(buf)
-
-	pub, err := net.Dial("tcp", "127.0.0.1:11890")
-	if err != nil {
-		t.Fatalf("dial pub sys: %v", err)
+	sub.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, _ := sub.Read(buf)
+	pkt, _ := codec.Decode(buf[:n])
+	if pkt == nil || pkt.Type != codec.TypeSUBACK || len(pkt.SubackCodes) == 0 || pkt.SubackCodes[0] != 0x80 {
+		t.Fatalf("$SYS/broker/# should be denied, got %+v", pkt)
 	}
-	defer pub.Close()
-	p2 := &codec.Packet{Type: codec.TypeCONNECT, Version: codec.ProtocolV311, ProtocolName: "MQTT", ProtocolLevel: 4, ConnectFlags: codec.ConnectFlags{CleanSession: true}, ClientID: "pub-sys"}
-	data, _ = codec.Encode(p2)
-	_, _ = pub.Write(data)
-	_, _ = pub.Read(buf)
-	pubPkt := &codec.Packet{Type: codec.TypePUBLISH, Version: codec.ProtocolV311, Topic: "test/sys", QoS: 0, Payload: []byte("hi")}
-	data, _ = codec.Encode(pubPkt)
-	_, _ = pub.Write(data)
-
-	sub.SetReadDeadline(time.Now().Add(12 * time.Second))
-	n, err := sub.Read(buf)
-	if err != nil {
-		t.Fatalf("sys not received: %v", err)
+	for _, f := range []string{"$SYS/#", "$SYS/+", "$SYS/broker/clients", "$SYS"} {
+		subPkt2 := &codec.Packet{Type: codec.TypeSUBSCRIBE, Version: codec.ProtocolV311, PacketID: 2, Subscriptions: []codec.Subscription{{Filter: f, QoS: 0}}}
+		data, _ = codec.Encode(subPkt2)
+		_, _ = sub.Write(data)
+		sub.SetReadDeadline(time.Now().Add(1 * time.Second))
+		n2, _ := sub.Read(buf)
+		pkt2, _ := codec.Decode(buf[:n2])
+		if pkt2 == nil || len(pkt2.SubackCodes) == 0 || pkt2.SubackCodes[0] != 0x80 {
+			t.Fatalf("filter %s should be denied, got %+v", f, pkt2)
+		}
 	}
-	foundSys := false
-	remaining := buf[:n]
-	for len(remaining) > 0 {
-		frame, leftover, err := parser.SplitFrame(remaining, 1<<20)
-		if err != nil {
-			break
-		}
-		pkt2, err2 := codec.Decode(frame)
-		if err2 == nil && pkt2 != nil && len(pkt2.Topic) >= 4 && pkt2.Topic[:4] == "$SYS" {
-			foundSys = true
-			break
-		}
-		if len(leftover) == 0 {
-			break
-		}
-		remaining = leftover
-	}
-	if !foundSys {
-		t.Fatalf("expected $SYS topic not found in %x", buf[:n])
+	sharedPkt := &codec.Packet{Type: codec.TypeSUBSCRIBE, Version: codec.ProtocolV311, PacketID: 3, Subscriptions: []codec.Subscription{{Filter: "$share/g/$SYS/broker/#", QoS: 0}}}
+	data, _ = codec.Encode(sharedPkt)
+	_, _ = sub.Write(data)
+	sub.SetReadDeadline(time.Now().Add(1 * time.Second))
+	n3, _ := sub.Read(buf)
+	pkt3, _ := codec.Decode(buf[:n3])
+	if pkt3 == nil || len(pkt3.SubackCodes) == 0 || pkt3.SubackCodes[0] != 0x80 {
+		t.Fatalf("$share $SYS should be denied, got %+v", pkt3)
 	}
 }
 

@@ -214,3 +214,49 @@ func TestTrieHashtagAtRoot(t *testing.T) {
 		t.Fatalf("a should match # only")
 	}
 }
+
+func TestMatchFilter(t *testing.T) {
+	cases := []struct {
+		topic  string
+		filter string
+		want   bool
+	}{
+		{"a/b/c", "a/b/c", true},
+		{"a/b/c", "a/b/+", true},
+		{"a/b/c", "a/#", true},
+		{"a/b", "a/b/c", false},
+		{"a/b/c", "#", true},
+		{"$SYS/broker/uptime", "#", false},
+		{"$SYS/broker/uptime", "$SYS/broker/uptime", true},
+		{"$SYS/broker/uptime", "$SYS/#", true},
+		{"$SYS/broker/uptime", "$SYS/+/uptime", true},
+		{"$SYS/broker/uptime", "$SYS/broker/+", true},
+		{"a/b/c", "a/+/c", true},
+		{"a/b/c", "+/+/+", true},
+		{"a/b", "+/+", true},
+		{"a/b/c/d", "a/b/c", false},
+		{"a/b/c", "a/b/c/d", false},
+		{"a", "a", true},
+		{"a", "b", false},
+		{"a/b", "a/b", true},
+		{"a/b/c", "a/b", false},
+		{"sensor/1/temp", "+/+/temp", true},
+		{"sensor/1/temp", "+/+/+", true},
+		{"a/b", "#", true},
+		{"", "a/b", false},
+		{"a/b/c", "a/+/+", true},
+		{"a/b/c/d", "a/#", true},
+		{"a/b", "a/+", true},
+		{"a/b", "+/b", true},
+		{"a/b/c", "+/b/c", true},
+		{"a/b/c", "x/#", false},
+		{"a/b", "a/b/#", true},
+		{"a", "#", true},
+		{"$SYS/test", "$SYS/test", true},
+	}
+	for _, tc := range cases {
+		if got := MatchFilter(tc.topic, tc.filter); got != tc.want {
+			t.Errorf("MatchFilter(%q,%q)=%v want %v", tc.topic, tc.filter, got, tc.want)
+		}
+	}
+}
