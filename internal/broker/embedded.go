@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"sync/atomic"
 
@@ -24,6 +25,23 @@ func (b *Broker) Publish(ctx context.Context, topic string, payload []byte, qos 
 		return ctx.Err()
 	default:
 	}
+	if retain {
+		if len(payload) == 0 {
+			if err := b.store.DeleteRetained(bgCtx(), topic); err != nil {
+				slog.Warn("store DeleteRetained failed", "err", err)
+			}
+		} else {
+			if exceeded, reason := b.checkRetainQuota(topic, payload); exceeded {
+				slog.Warn("retain quota exceeded", "reason", reason, "topic", topic, "client", "embedded")
+				mqttRetainQuotaExceeded.WithLabelValues(reason).Inc()
+				mqttPacketDropped.WithLabelValues("retain_quota").Inc()
+				return fmt.Errorf("retain quota exceeded: %s", reason)
+			}
+			if err := b.store.SaveRetained(bgCtx(), topic, &persistence.Message{Topic: topic, Payload: payload, QoS: qos, Retain: true}); err != nil {
+				slog.Warn("store SaveRetained failed", "err", err)
+			}
+		}
+	}
 	b.routeMessage(topic, payload, qos, retain, nil, "embedded")
 	return nil
 }
@@ -37,6 +55,23 @@ func (b *Broker) PublishWithProperties(ctx context.Context, topic string, payloa
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
+	}
+	if retain {
+		if len(payload) == 0 {
+			if err := b.store.DeleteRetained(bgCtx(), topic); err != nil {
+				slog.Warn("store DeleteRetained failed", "err", err)
+			}
+		} else {
+			if exceeded, reason := b.checkRetainQuota(topic, payload); exceeded {
+				slog.Warn("retain quota exceeded", "reason", reason, "topic", topic, "client", "embedded")
+				mqttRetainQuotaExceeded.WithLabelValues(reason).Inc()
+				mqttPacketDropped.WithLabelValues("retain_quota").Inc()
+				return fmt.Errorf("retain quota exceeded: %s", reason)
+			}
+			if err := b.store.SaveRetained(bgCtx(), topic, &persistence.Message{Topic: topic, Payload: payload, QoS: qos, Retain: true}); err != nil {
+				slog.Warn("store SaveRetained failed", "err", err)
+			}
+		}
 	}
 	b.routeMessage(topic, payload, qos, retain, props, "embedded")
 	return nil

@@ -72,6 +72,31 @@ func (m *MemoryStore) ListRetained(_ context.Context) ([]*Message, error) {
 	}
 	return out, nil
 }
+
+func retainedSize(msg *Message) int64 {
+	if msg == nil {
+		return 0
+	}
+	// topic + payload + small overhead; keep consistent with Redis counting
+	return int64(len(msg.Topic) + len(msg.Payload) + 10)
+}
+
+func (m *MemoryStore) GetRetainedStats(_ context.Context) (RetainStats, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	stats := RetainStats{
+		TotalMessages: len(m.retained),
+		TopicStats:    make(map[string]TopicRetainStats, len(m.retained)),
+	}
+	var total int64
+	for topic, msg := range m.retained {
+		sz := retainedSize(msg)
+		total += sz
+		stats.TopicStats[topic] = TopicRetainStats{Count: 1, Size: sz}
+	}
+	stats.TotalSize = total
+	return stats, nil
+}
 func (m *MemoryStore) EnqueueOffline(_ context.Context, clientID string, msg *Message) error {
 	m.mu.Lock()
 	m.offline[clientID] = append(m.offline[clientID], msg)

@@ -14,6 +14,17 @@ type Message struct {
 	From    string
 }
 
+type RetainStats struct {
+	TotalMessages int
+	TotalSize     int64
+	TopicStats    map[string]TopicRetainStats
+}
+
+type TopicRetainStats struct {
+	Count int
+	Size  int64
+}
+
 type Store interface {
 	GetSession(ctx context.Context, clientID string) (*session.Session, error)
 	SaveSession(ctx context.Context, s *session.Session) error
@@ -23,6 +34,7 @@ type Store interface {
 	SaveRetained(ctx context.Context, topic string, msg *Message) error
 	DeleteRetained(ctx context.Context, topic string) error
 	ListRetained(ctx context.Context) ([]*Message, error)
+	GetRetainedStats(ctx context.Context) (RetainStats, error)
 
 	EnqueueOffline(ctx context.Context, clientID string, msg *Message) error
 	DequeueOffline(ctx context.Context, clientID string) ([]*Message, error)

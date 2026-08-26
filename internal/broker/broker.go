@@ -25,33 +25,38 @@ import (
 )
 
 var (
-	mqttMessagesReceived = promauto.NewCounter(prometheus.CounterOpts{Name: "mqtt_messages_received_total", Help: "Total MQTT messages received"})
-	mqttMessagesSent     = promauto.NewCounter(prometheus.CounterOpts{Name: "mqtt_messages_sent_total", Help: "Total MQTT messages sent"})
+	mqttMessagesReceived      = promauto.NewCounter(prometheus.CounterOpts{Name: "mqtt_messages_received_total", Help: "Total MQTT messages received"})
+	mqttMessagesSent          = promauto.NewCounter(prometheus.CounterOpts{Name: "mqtt_messages_sent_total", Help: "Total MQTT messages sent"})
 	//nolint:unused
-	mqttClientsConnected = promauto.NewGauge(prometheus.GaugeOpts{Name: "mqtt_clients_connected", Help: "Current connected clients"})
-	mqttInflight         = promauto.NewGauge(prometheus.GaugeOpts{Name: "mqtt_inflight_messages", Help: "Current inflight messages"})
-	mqttAuthFailed       = promauto.NewCounter(prometheus.CounterOpts{Name: "mqtt_auth_failed_total", Help: "Total auth failures"})
-	mqttPacketDropped    = promauto.NewCounterVec(prometheus.CounterOpts{Name: "mqtt_packet_dropped_total", Help: "Total dropped packets"}, []string{"reason"})
-	mqttRedisLatency     = promauto.NewHistogram(prometheus.HistogramOpts{Name: "mqtt_redis_latency_seconds", Help: "Redis operation latency", Buckets: prometheus.DefBuckets})
+	mqttClientsConnected      = promauto.NewGauge(prometheus.GaugeOpts{Name: "mqtt_clients_connected", Help: "Current connected clients"})
+	mqttInflight              = promauto.NewGauge(prometheus.GaugeOpts{Name: "mqtt_inflight_messages", Help: "Current inflight messages"})
+	mqttAuthFailed            = promauto.NewCounter(prometheus.CounterOpts{Name: "mqtt_auth_failed_total", Help: "Total auth failures"})
+	mqttPacketDropped         = promauto.NewCounterVec(prometheus.CounterOpts{Name: "mqtt_packet_dropped_total", Help: "Total dropped packets"}, []string{"reason"})
+	mqttRedisLatency          = promauto.NewHistogram(prometheus.HistogramOpts{Name: "mqtt_redis_latency_seconds", Help: "Redis operation latency", Buckets: prometheus.DefBuckets})
+	mqttRetainQuotaExceeded   = promauto.NewCounterVec(prometheus.CounterOpts{Name: "mqtt_retain_quota_exceeded_total", Help: "Total retain quota exceeded"}, []string{"reason"})
 )
 
 type Config struct {
-	NodeID             string
-	TCPAddr            string
-	WSAddr             string
-	RedisAddr          string
-	PprofAddr          string
-	ACLFile            string
-	JWTSecret          string
-	MaxPacketSize      int
-	AllowAnonymous     bool
-	TLSCertFile        string
-	TLSKeyFile         string
-	TLSCAFile          string
-	TLSConfig          *tls.Config
-	MaxConnections     int
-	MaxPublishPerSec   int
-	MaxSubscribePerSec int
+	NodeID                string
+	TCPAddr               string
+	WSAddr                string
+	RedisAddr             string
+	PprofAddr             string
+	ACLFile               string
+	JWTSecret             string
+	MaxPacketSize         int
+	AllowAnonymous        bool
+	TLSCertFile           string
+	TLSKeyFile            string
+	TLSCAFile             string
+	TLSConfig             *tls.Config
+	MaxConnections        int
+	MaxPublishPerSec      int
+	MaxSubscribePerSec    int
+	MaxRetainedMessages   int
+	MaxRetainedSize       int64
+	MaxRetainPerTopic     int
+	MaxRetainSizePerTopic int64
 }
 
 type BrokerStats struct {

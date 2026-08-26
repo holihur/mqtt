@@ -128,6 +128,25 @@ func (r *RedisStore) ListRetained(ctx context.Context) ([]*Message, error) {
 	}
 	return out, nil
 }
+
+func (r *RedisStore) GetRetainedStats(ctx context.Context) (RetainStats, error) {
+	msgs, err := r.ListRetained(ctx)
+	if err != nil {
+		return RetainStats{}, err
+	}
+	stats := RetainStats{
+		TotalMessages: len(msgs),
+		TopicStats:    make(map[string]TopicRetainStats, len(msgs)),
+	}
+	var total int64
+	for _, m := range msgs {
+		sz := int64(len(m.Topic) + len(m.Payload) + 10)
+		total += sz
+		stats.TopicStats[m.Topic] = TopicRetainStats{Count: 1, Size: sz}
+	}
+	stats.TotalSize = total
+	return stats, nil
+}
 func (r *RedisStore) EnqueueOffline(ctx context.Context, clientID string, msg *Message) error {
 	data, err := json.Marshal(msg)
 	if err != nil {

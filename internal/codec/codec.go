@@ -464,10 +464,10 @@ func decodePublish(p *Packet, b []byte) error {
 			if propsLen > 0 {
 				_ = saved
 				p.PubProps = props
-				pos = np
 			} else {
 				p.PubProps = nil
 			}
+			pos = np
 		} else {
 			p.PubProps = nil
 		}

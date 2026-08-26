@@ -82,6 +82,40 @@ func (b *Broker) allowSubscribe(clientID string) bool {
 	return lim.subscribeCount <= b.cfg.MaxSubscribePerSec
 }
 
+func (b *Broker) checkRetainQuota(topic string, payload []byte) (bool, string) {
+	stats, err := b.store.GetRetainedStats(bgCtx())
+	if err != nil {
+		slog.Warn("GetRetainedStats failed", "err", err)
+		return false, ""
+	}
+	newSize := int64(len(topic) + len(payload) + 10)
+	existingSize := int64(0)
+	exists := false
+	if ts, ok := stats.TopicStats[topic]; ok {
+		exists = true
+		existingSize = ts.Size
+	}
+	totalCountAfter := stats.TotalMessages
+	if !exists {
+		totalCountAfter++
+	}
+	totalSizeAfter := stats.TotalSize - existingSize + newSize
+	if totalCountAfter > b.cfg.MaxRetainedMessages {
+		return true, "global_count"
+	}
+	if totalSizeAfter > b.cfg.MaxRetainedSize {
+		return true, "global_size"
+	}
+	if 1 > b.cfg.MaxRetainPerTopic {
+		return true, "per_topic_count"
+	}
+	if newSize > b.cfg.MaxRetainSizePerTopic {
+		return true, "per_topic_size"
+	}
+	_ = exists
+	return false, ""
+}
+
 func (b *Broker) handlePublish(conn *transport.Conn, sess *session.Session, pkt *codec.Packet) {
 	if strings.HasPrefix(pkt.Topic, "$SYS/") {
 		if pkt.QoS == 1 {
@@ -170,13 +204,24 @@ func (b *Broker) handlePublish(conn *transport.Conn, sess *session.Session, pkt 
 		return
 	}
 
-	// Retain handling
+	// Retain handling with quota
 	if pkt.Retain {
 		if len(pkt.Payload) == 0 {
 			if err := b.store.DeleteRetained(bgCtx(), topicName); err != nil {
 				slog.Warn("store DeleteRetained failed", "err", err)
 			}
 		} else {
+			if exceeded, reason := b.checkRetainQuota(topicName, pkt.Payload); exceeded {
+				slog.Warn("retain quota exceeded", "reason", reason, "topic", topicName, "client", sess.ClientID, "payloadSize", len(pkt.Payload))
+				mqttRetainQuotaExceeded.WithLabelValues(reason).Inc()
+				mqttPacketDropped.WithLabelValues("retain_quota").Inc()
+				if pkt.QoS == 1 {
+					ack := &codec.Packet{Type: codec.TypePUBACK, Version: sess.Version, PacketID: pkt.PacketID, Reason: 0x97}
+					_ = b.sendPacket(conn, ack)
+					b.debugPacket("send", sess.ClientID, ack)
+				}
+				return
+			}
 			if err := b.store.SaveRetained(bgCtx(), topicName, &persistence.Message{Topic: topicName, Payload: pkt.Payload, QoS: pkt.QoS, Retain: true}); err != nil {
 				slog.Warn("store SaveRetained failed", "err", err)
 			}

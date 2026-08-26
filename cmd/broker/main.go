@@ -37,18 +37,22 @@ func splitAddrs(s string) []string {
 
 func main() {
 	var (
-		tcpAddr        = flag.String("tcp", ":1883", "TCP listen addr")
-		wsAddr         = flag.String("ws", ":8083", "WebSocket listen addr (empty to disable)")
-		redisAddr      = flag.String("redis", "127.0.0.1:6379", "Redis addr (comma-separated for cluster, empty to disable)")
-		pprofAddr      = flag.String("pprof", "", "pprof listen addr (empty to disable, e.g. :6060)")
-		aclFile        = flag.String("acl", "", "ACL file path (empty to disable)")
-		jwtSecret      = flag.String("jwt-secret", "", "JWT HMAC secret (empty to disable)")
-		allowAnonymous = flag.String("allow-anonymous", "false", "allow anonymous (true/false)")
-		logLevel       = flag.String("log-level", "info", "log level: debug/info/warn/error (lower more verbose)")
-		nodeID         = flag.String("node", "", "Node ID (auto if empty)")
-		tlsCert        = flag.String("tls-cert", "", "TLS cert file (empty to disable TLS)")
-		tlsKey         = flag.String("tls-key", "", "TLS key file")
-		tlsCA          = flag.String("tls-ca", "", "TLS CA file for mTLS (empty to disable client auth)")
+		tcpAddr              = flag.String("tcp", ":1883", "TCP listen addr")
+		wsAddr               = flag.String("ws", ":8083", "WebSocket listen addr (empty to disable)")
+		redisAddr            = flag.String("redis", "127.0.0.1:6379", "Redis addr (comma-separated for cluster, empty to disable)")
+		pprofAddr            = flag.String("pprof", "", "pprof listen addr (empty to disable, e.g. :6060)")
+		aclFile              = flag.String("acl", "", "ACL file path (empty to disable)")
+		jwtSecret            = flag.String("jwt-secret", "", "JWT HMAC secret (empty to disable)")
+		allowAnonymous       = flag.String("allow-anonymous", "false", "allow anonymous (true/false)")
+		logLevel             = flag.String("log-level", "info", "log level: debug/info/warn/error (lower more verbose)")
+		nodeID               = flag.String("node", "", "Node ID (auto if empty)")
+		tlsCert              = flag.String("tls-cert", "", "TLS cert file (empty to disable TLS)")
+		tlsKey               = flag.String("tls-key", "", "TLS key file")
+		tlsCA                = flag.String("tls-ca", "", "TLS CA file for mTLS (empty to disable client auth)")
+		maxRetainMessages    = flag.Int("max-retain-messages", 10000, "max retained messages globally")
+		maxRetainSize        = flag.Int64("max-retain-size", 1<<30, "max total retained size in bytes")
+		maxRetainPerTopic    = flag.Int("max-retain-per-topic", 1000, "max retained messages per topic")
+		maxRetainSizePerTopic = flag.Int64("max-retain-size-per-topic", 100<<20, "max retained size per topic in bytes")
 	)
 	flag.Parse()
 	logger.Init(*logLevel)
@@ -79,17 +83,21 @@ func main() {
 
 	allowAnon := *allowAnonymous == "true"
 	cfg := broker.Config{
-		NodeID:         *nodeID,
-		TCPAddr:        *tcpAddr,
-		WSAddr:         *wsAddr,
-		RedisAddr:      *redisAddr,
-		PprofAddr:      *pprofAddr,
-		ACLFile:        *aclFile,
-		JWTSecret:      *jwtSecret,
-		AllowAnonymous: allowAnon,
-		TLSCertFile:    *tlsCert,
-		TLSKeyFile:     *tlsKey,
-		TLSCAFile:      *tlsCA,
+		NodeID:                *nodeID,
+		TCPAddr:               *tcpAddr,
+		WSAddr:                *wsAddr,
+		RedisAddr:             *redisAddr,
+		PprofAddr:             *pprofAddr,
+		ACLFile:               *aclFile,
+		JWTSecret:             *jwtSecret,
+		AllowAnonymous:        allowAnon,
+		TLSCertFile:           *tlsCert,
+		TLSKeyFile:            *tlsKey,
+		TLSCAFile:             *tlsCA,
+		MaxRetainedMessages:   *maxRetainMessages,
+		MaxRetainedSize:       *maxRetainSize,
+		MaxRetainPerTopic:     *maxRetainPerTopic,
+		MaxRetainSizePerTopic: *maxRetainSizePerTopic,
 	}
 	b, err := broker.NewWithOptions(cfg, broker.WithStore(store))
 	if err != nil {
