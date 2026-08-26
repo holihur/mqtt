@@ -57,6 +57,7 @@ type Config struct {
 	MaxRetainedSize       int64
 	MaxRetainPerTopic     int
 	MaxRetainSizePerTopic int64
+	WalDir                string
 }
 
 type BrokerStats struct {
@@ -138,7 +139,16 @@ func NewWithOptions(cfg Config, opts ...Option) (*Broker, error) {
 		b.auth = buildAuthenticator(b.cfg)
 	}
 	if b.store == nil {
-		b.store = persistence.NewMemoryStore()
+		if b.cfg.WalDir != "" && b.cfg.WalDir != "-" {
+			if ps, err := persistence.NewPebbleStore(b.cfg.WalDir, "mqtt"); err == nil {
+				b.store = ps
+			} else {
+				slog.Warn("pebble WAL open failed, fallback to memory", "dir", b.cfg.WalDir, "err", err)
+				b.store = persistence.NewMemoryStore()
+			}
+		} else {
+			b.store = persistence.NewMemoryStore()
+		}
 	}
 	if b.nodeID == "" {
 		b.nodeID = b.cfg.NodeID
@@ -167,7 +177,16 @@ func New(cfg Config, store persistence.Store, authenticator auth.Authenticator) 
 			authenticator = buildAuthenticator(cfg)
 		}
 		if store == nil {
-			store = persistence.NewMemoryStore()
+			if cfg.WalDir != "" && cfg.WalDir != "-" {
+				if ps, err := persistence.NewPebbleStore(cfg.WalDir, "mqtt"); err == nil {
+					store = ps
+				} else {
+					slog.Warn("pebble WAL open failed, fallback to memory", "err", err)
+					store = persistence.NewMemoryStore()
+				}
+			} else {
+				store = persistence.NewMemoryStore()
+			}
 		}
 		b = &Broker{
 			cfg:         cfg,

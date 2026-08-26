@@ -26,6 +26,7 @@ func DefaultConfig() Config {
 		MaxRetainedSize:       1 << 30,
 		MaxRetainPerTopic:     1000,
 		MaxRetainSizePerTopic: 100 << 20,
+		WalDir:                "./data/wal",
 	}
 }
 
@@ -54,6 +55,9 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.MaxRetainSizePerTopic == 0 {
 		c.MaxRetainSizePerTopic = 100 << 20
+	}
+	if c.WalDir == "" {
+		c.WalDir = "./data/wal"
 	}
 }
 
@@ -155,6 +159,26 @@ func WithRedisAddr(addr string) Option {
 	}
 }
 
+// WithWALDir 覆盖 WAL 目录；传 "" 或 "-" 表示禁用 WAL。WAL 默认开启 "./data/wal"。
+func WithWALDir(dir string) Option {
+	return func(b *Broker) error {
+		b.cfg.WalDir = dir
+		return nil
+	}
+}
+
+// WithWALStore 注入任意 Store 作为 WAL 实现（接口可替换：Pebble/Badger/Memory 等）。
+// 若同时通过 WithStore 注入主 Store，则主 Store 优先，WAL 作为备用；若仅注入 WAL，则其即为主 Store。
+func WithWALStore(s persistence.Store) Option {
+	return func(b *Broker) error {
+		if s != nil {
+			b.cfg.WalDir = "injected"
+			b.store = s
+		}
+		return nil
+	}
+}
+
 // WithConfig 合并一个完整 Config（非零字段覆盖）。
 func WithConfig(cfg Config) Option {
 	return func(b *Broker) error {
@@ -217,6 +241,13 @@ func WithConfig(cfg Config) Option {
 		}
 		if cfg.MaxRetainSizePerTopic != 0 {
 			b.cfg.MaxRetainSizePerTopic = cfg.MaxRetainSizePerTopic
+		}
+		if cfg.WalDir != "" {
+			if cfg.WalDir == "-" {
+				b.cfg.WalDir = ""
+			} else {
+				b.cfg.WalDir = cfg.WalDir
+			}
 		}
 		// AllowAnonymous 为 bool，WithConfig 视为显式覆盖需调用方自行用 WithAllowAnonymous
 		return nil

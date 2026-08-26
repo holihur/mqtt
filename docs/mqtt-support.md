@@ -204,7 +204,7 @@ Broker 对 27 种 `Properties` 均可 **编解码**，业务层使用如下：
 | `RH=1/2` 严格语义 | ⚠️ | 当前均视为 `RH=0` 回 Retain |
 | Shared Sub 跨节点哈希 | ⚠️ | 单机轮询，未跨 Redis 选主 |
 | `MessageExpiry` 自动清理 | ⚠️ | 仅透传 Properties，未定时过期 Retain |
-| WAL (`Pebble/Badger`) | ❌ | `Memory→Redis` 两级，`wayfinder` 待定 |
+| WAL | ✅ 默认开启 | `Store` 接口可插拔：`PebbleStore ./data/wal` 默认 + `FallbackStore(Redis→Pebble)`；`--wal-dir="-"` 禁用，`WithWALStore(s Store)` 可换 Badger/任意实现 |
 | 多租户/计费/控制台 | ❌ | 本轮 Out of scope |
 
 ---

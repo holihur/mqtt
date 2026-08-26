@@ -53,13 +53,23 @@ func main() {
 		maxRetainSize         = flag.Int64("max-retain-size", 1<<30, "max total retained size in bytes")
 		maxRetainPerTopic     = flag.Int("max-retain-per-topic", 1000, "max retained messages per topic")
 		maxRetainSizePerTopic = flag.Int64("max-retain-size-per-topic", 100<<20, "max retained size per topic in bytes")
+		walDir                = flag.String("wal-dir", "./data/wal", "WAL dir (pebble), \"-\" to disable; any Store impl can be injected via WithStore")
+		walEnabled            = flag.Bool("wal", true, "enable WAL (default true, uses Store interface, pebble is one impl)")
 	)
 	flag.Parse()
 	logger.Init(*logLevel)
 	slog.Info("starting", "mode", "standalone", "log_level", *logLevel)
 
 	var store persistence.Store
-	var redisCli redis.UniversalClient
+	var walStore persistence.Store
+	if *walEnabled && *walDir != "" && *walDir != "-" {
+		if ps, err := persistence.NewPebbleStore(*walDir, "mqtt"); err == nil {
+			walStore = ps
+			slog.Info("using pebble WAL", "dir", *walDir)
+		} else {
+			slog.Warn("pebble WAL open failed, fallback", "dir", *walDir, "err", err)
+		}
+	}
 	if *redisAddr != "" {
 		addrs := splitAddrs(*redisAddr)
 		cli := redis.NewUniversalClient(&redis.UniversalOptions{Addrs: addrs})
@@ -67,21 +77,39 @@ func main() {
 		pingErr := cli.Ping(pingCtx).Err()
 		cancel()
 		if pingErr != nil {
-			slog.Warn("redis unavailable, falling back to memory", "addr", *redisAddr, "err", pingErr)
-			store = persistence.NewMemoryStore()
+			slog.Warn("redis unavailable", "addr", *redisAddr, "err", pingErr)
+			if walStore != nil {
+				store = walStore
+				slog.Info("fallback to pebble WAL")
+			} else {
+				store = persistence.NewMemoryStore()
+				slog.Info("fallback to memory")
+			}
+			_ = cli.Close()
 		} else {
-			store = persistence.NewRedisStoreWithClient(cli, "mqtt")
-			redisCli = cli
+			redisStore := persistence.NewRedisStoreWithClient(cli, "mqtt")
 			slog.Info("using redis store", "addr", *redisAddr)
+			if walStore != nil {
+				store = persistence.NewFallbackStore(redisStore, walStore)
+				slog.Info("using fallback store: redis primary + pebble WAL (both implement persistence.Store)")
+			} else {
+				store = redisStore
+			}
 		}
 	} else {
-		store = persistence.NewMemoryStore()
+		if walStore != nil {
+			store = walStore
+		} else {
+			store = persistence.NewMemoryStore()
+		}
 	}
-	if redisCli != nil {
-		defer func() { _ = redisCli.Close() }()
-	}
+	defer func() { _ = store.Close() }()
 
 	allowAnon := *allowAnonymous == "true"
+	walDirCfg := ""
+	if *walEnabled && *walDir != "" && *walDir != "-" {
+		walDirCfg = *walDir
+	}
 	cfg := broker.Config{
 		NodeID:                *nodeID,
 		TCPAddr:               *tcpAddr,
@@ -98,6 +126,7 @@ func main() {
 		MaxRetainedSize:       *maxRetainSize,
 		MaxRetainPerTopic:     *maxRetainPerTopic,
 		MaxRetainSizePerTopic: *maxRetainSizePerTopic,
+		WalDir:                walDirCfg,
 	}
 	b, err := broker.NewWithOptions(cfg, broker.WithStore(store))
 	if err != nil {

@@ -58,12 +58,13 @@
 | 剪枝 | `Remove` 后空分支自动 `prune` |
 | 并发 | `RWMutex`，`Match` 栈式 DFS，`<1µs` |
 
-## 6. Retain / Will
+## 6. Retain / Will / WAL
 
 | 特性 | 说明 |
 |---|---|
-| Retain | `SaveRetained/DeleteRetained/ListRetained/GetRetainedStats` 落 Redis（`mqtt:retain:`），`PUBLISH retain + payload==""` 清空；配额见 §11 |
+| Retain | `SaveRetained/DeleteRetained/ListRetained/GetRetainedStats` 落 `Store`（`Redis mqtt:retain:` / `Pebble` / `Memory`），`PUBLISH retain + payload==""` 清空；配额见 §11 |
 | 配额 | `MaxRetainedMessages 10000 / MaxRetainedSize 1GB / MaxRetainPerTopic 1000 / MaxRetainSizePerTopic 100MB`，超限 `PUBACK 0x97` + `mqtt_retain_quota_exceeded_total{reason}` |
+| WAL | `Store` 接口可插拔：`MemoryStore / RedisStore / PebbleStore (./data/wal, 默认开启)` + `FallbackStore(Redis→Pebble)`；`--wal-dir="-"` 禁用，`WithWALStore(s Store)` 注入 Badger/任意实现 |
 | Will | `Will.Topic/Payload/QoS/Retain/DelayInterval`，`DelayInterval ≤86400` 限幅，`AfterFunc` 延迟投递，`$SYS/` 非法直接丢弃 |
 | 遗嘱 ACL | `handleWill` 前二次 `Authorize` |
 
