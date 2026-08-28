@@ -1,0 +1,72 @@
+version: 2
+project_name: mqtt
+
+before:
+  hooks:
+    - go mod tidy
+    - go vet ./...
+
+builds:
+  - id: broker
+    main: ./cmd/broker
+    binary: broker
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: broker
+    builds:
+      - broker
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "Merge pull request"
+
+dockers:
+  - id: broker
+    image_templates:
+      - "ghcr.io/holihur/mqtt:{{ .Version }}"
+      - "ghcr.io/holihur/mqtt:latest"
+    dockerfile: Dockerfile
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64,linux/arm64"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+release:
+  footer: |
+    ### Docker
+    ```bash
+    docker pull ghcr.io/holihur/mqtt:{{ .Version }}
+    docker run -p 1883:1883 -p 8083:8083 ghcr.io/holihur/mqtt:{{ .Version }}
+    ```

@@ -50,6 +50,13 @@ jobs:
       - name: Build
         run: task build
 
+      - name: GoReleaser check
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check
+
       - name: Lint
         uses: golangci/golangci-lint-action@v8
         with:

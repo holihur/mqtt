@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -14,6 +15,12 @@ import (
 	"mqtt/internal/persistence"
 
 	"github.com/redis/go-redis/v9"
+)
+
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
 )
 
 func splitAddrs(s string) []string {
@@ -56,10 +63,15 @@ func main() {
 		walDir                = flag.String("wal-dir", "./data/wal", "WAL dir (pebble), \"-\" to disable; any Store impl can be injected via WithStore")
 		walEnabled            = flag.Bool("wal", true, "enable WAL (default true, uses Store interface, pebble is one impl)")
 		wsAllowOrigins        = flag.String("ws-allow-origins", "", "WS allowed origins, comma separated or \"*\" for all; empty means same-origin + empty Origin only")
+		showVersion           = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
+	if *showVersion {
+		fmt.Printf("mqtt broker %s commit %s date %s\n", version, commit, date)
+		os.Exit(0)
+	}
 	logger.Init(*logLevel)
-	slog.Info("starting", "mode", "standalone", "log_level", *logLevel)
+	slog.Info("starting", "mode", "standalone", "version", version, "commit", commit, "date", date, "log_level", *logLevel)
 
 	var store persistence.Store
 	var walStore persistence.Store
