@@ -2,22 +2,27 @@ package persistence
 
 import (
 	"context"
+	"fmt"
 	"mqtt/internal/session"
 	"sync"
 )
 
 type MemoryStore struct {
-	mu       sync.RWMutex
-	sessions map[string]*session.Session
-	retained map[string]*Message
-	offline  map[string][]*Message
+	mu            sync.RWMutex
+	sessions      map[string]*session.Session
+	retained      map[string]*Message
+	offline       map[string][]*Message
+	pendingWills  map[string]*PendingWill
+	pendingRetries map[string]*PendingRetry
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		sessions: make(map[string]*session.Session),
-		retained: make(map[string]*Message),
-		offline:  make(map[string][]*Message),
+		sessions:       make(map[string]*session.Session),
+		retained:       make(map[string]*Message),
+		offline:        make(map[string][]*Message),
+		pendingWills:   make(map[string]*PendingWill),
+		pendingRetries: make(map[string]*PendingRetry),
 	}
 }
 
@@ -120,4 +125,52 @@ func (m *MemoryStore) ClearOffline(_ context.Context, clientID string) error {
 	m.mu.Unlock()
 	return nil
 }
+func (m *MemoryStore) SavePendingWill(_ context.Context, w *PendingWill) error {
+	m.mu.Lock()
+	m.pendingWills[w.ClientID] = w
+	m.mu.Unlock()
+	return nil
+}
+func (m *MemoryStore) DeletePendingWill(_ context.Context, clientID string) error {
+	m.mu.Lock()
+	delete(m.pendingWills, clientID)
+	m.mu.Unlock()
+	return nil
+}
+func (m *MemoryStore) ListPendingWills(_ context.Context) ([]*PendingWill, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*PendingWill, 0, len(m.pendingWills))
+	for _, v := range m.pendingWills {
+		out = append(out, v)
+	}
+	return out, nil
+}
+func (m *MemoryStore) SavePendingRetry(_ context.Context, r *PendingRetry) error {
+	m.mu.Lock()
+	key := retryKey(r.ClientID, r.PacketID)
+	m.pendingRetries[key] = r
+	m.mu.Unlock()
+	return nil
+}
+func (m *MemoryStore) DeletePendingRetry(_ context.Context, clientID string, packetID uint16) error {
+	m.mu.Lock()
+	delete(m.pendingRetries, retryKey(clientID, packetID))
+	m.mu.Unlock()
+	return nil
+}
+func (m *MemoryStore) ListPendingRetries(_ context.Context) ([]*PendingRetry, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*PendingRetry, 0, len(m.pendingRetries))
+	for _, v := range m.pendingRetries {
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+func retryKey(clientID string, packetID uint16) string {
+	return fmt.Sprintf("%s:%d", clientID, packetID)
+}
+
 func (m *MemoryStore) Close() error { return nil }

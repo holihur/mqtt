@@ -148,6 +148,8 @@ func (b *Broker) initStart(ctx context.Context) (context.Context, error) {
 	if b.cfg.ACLFile != "" {
 		go b.watchACL(runCtx)
 	}
+	go b.restorePendingWills()
+	go b.restorePendingRetries()
 	return runCtx, nil
 }
 

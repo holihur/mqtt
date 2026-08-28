@@ -100,6 +100,45 @@ func (f *FallbackStore) ClearOffline(ctx context.Context, clientID string) error
 	return nil
 }
 
+func (f *FallbackStore) SavePendingWill(ctx context.Context, w *PendingWill) error {
+	if err := f.primary.SavePendingWill(ctx, w); err == nil {
+		_ = f.fallback.SavePendingWill(ctx, w)
+		return nil
+	}
+	return f.fallback.SavePendingWill(ctx, w)
+}
+func (f *FallbackStore) DeletePendingWill(ctx context.Context, clientID string) error {
+	_ = f.primary.DeletePendingWill(ctx, clientID)
+	_ = f.fallback.DeletePendingWill(ctx, clientID)
+	return nil
+}
+func (f *FallbackStore) ListPendingWills(ctx context.Context) ([]*PendingWill, error) {
+	list, err := f.primary.ListPendingWills(ctx)
+	if err == nil && len(list) > 0 {
+		return list, nil
+	}
+	return f.fallback.ListPendingWills(ctx)
+}
+func (f *FallbackStore) SavePendingRetry(ctx context.Context, r *PendingRetry) error {
+	if err := f.primary.SavePendingRetry(ctx, r); err == nil {
+		_ = f.fallback.SavePendingRetry(ctx, r)
+		return nil
+	}
+	return f.fallback.SavePendingRetry(ctx, r)
+}
+func (f *FallbackStore) DeletePendingRetry(ctx context.Context, clientID string, packetID uint16) error {
+	_ = f.primary.DeletePendingRetry(ctx, clientID, packetID)
+	_ = f.fallback.DeletePendingRetry(ctx, clientID, packetID)
+	return nil
+}
+func (f *FallbackStore) ListPendingRetries(ctx context.Context) ([]*PendingRetry, error) {
+	list, err := f.primary.ListPendingRetries(ctx)
+	if err == nil && len(list) > 0 {
+		return list, nil
+	}
+	return f.fallback.ListPendingRetries(ctx)
+}
+
 func (f *FallbackStore) Close() error {
 	_ = f.primary.Close()
 	_ = f.fallback.Close()
