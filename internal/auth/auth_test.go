@@ -34,10 +34,10 @@ func TestDenyAll(t *testing.T) {
 func TestSimpleAuth_Authenticate(t *testing.T) {
 	t.Parallel()
 
-	t.Run("empty_users_allows_all", func(t *testing.T) {
+	t.Run("empty_users_denies_all", func(t *testing.T) {
 		s := &SimpleAuth{Users: map[string]string{}}
-		if !s.Authenticate("c", "anyone", []byte("x")) {
-			t.Fatal("empty users map should allow all")
+		if s.Authenticate("c", "anyone", []byte("x")) {
+			t.Fatal("empty users map must not authenticate anyone (fail-closed)")
 		}
 	})
 
@@ -164,13 +164,13 @@ func TestJWTAuth_EdgeCases(t *testing.T) {
 		}
 	})
 
-	t.Run("no_claims_token_passes", func(t *testing.T) {
+	t.Run("token_without_exp_rejected", func(t *testing.T) {
 		secret := "my-secret"
 		j := &JWTAuth{Secret: secret}
 		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{})
 		signed, _ := token.SignedString([]byte(secret))
-		if !j.Authenticate("c", "u", []byte(signed)) {
-			t.Fatal("token without exp/client_id claims should pass")
+		if j.Authenticate("c", "u", []byte(signed)) {
+			t.Fatal("token without exp claim must be rejected (no eternal tokens)")
 		}
 	})
 

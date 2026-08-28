@@ -38,28 +38,30 @@ var (
 )
 
 type Config struct {
-	NodeID                string
-	TCPAddr               string
-	WSAddr                string
-	RedisAddr             string
-	PprofAddr             string
-	ACLFile               string
-	JWTSecret             string
-	MaxPacketSize         int
-	AllowAnonymous        bool
-	TLSCertFile           string
-	TLSKeyFile            string
-	TLSCAFile             string
-	TLSConfig             *tls.Config
-	MaxConnections        int
-	MaxPublishPerSec      int
-	MaxSubscribePerSec    int
-	MaxRetainedMessages   int
-	MaxRetainedSize       int64
-	MaxRetainPerTopic     int
-	MaxRetainSizePerTopic int64
-	WalDir                string
-	WsAllowOrigins        []string
+	NodeID                    string
+	TCPAddr                   string
+	WSAddr                    string
+	RedisAddr                 string
+	PprofAddr                 string
+	ACLFile                   string
+	JWTSecret                 string
+	MaxPacketSize             int
+	AllowAnonymous            bool
+	TLSCertFile               string
+	TLSKeyFile                string
+	TLSCAFile                 string
+	TLSConfig                 *tls.Config
+	MaxConnections            int
+	MaxPublishPerSec          int
+	MaxSubscribePerSec        int
+	MaxRetainedMessages       int
+	MaxRetainedSize           int64
+	MaxRetainPerTopic         int
+	MaxRetainSizePerTopic     int64
+	MaxInflightWindow         int // server-side cap on concurrent unacked QoS1/2 deliveries per client
+	MaxSubscriptionsPerClient int // cap on total active subscriptions per client (trie memory bound)
+	WalDir                    string
+	WsAllowOrigins            []string
 }
 
 type BrokerStats struct {
@@ -139,7 +141,11 @@ func NewWithOptions(cfg Config, opts ...Option) (*Broker, error) {
 		}
 	}
 	if b.auth == nil {
-		b.auth = buildAuthenticator(b.cfg)
+		a, err := buildAuthenticator(b.cfg)
+		if err != nil {
+			return nil, err
+		}
+		b.auth = a
 	}
 	if b.store == nil {
 		if b.cfg.WalDir != "" && b.cfg.WalDir != "-" {
@@ -177,7 +183,12 @@ func New(cfg Config, store persistence.Store, authenticator auth.Authenticator) 
 			cfg.NodeID = uuid.NewString()[:8]
 		}
 		if authenticator == nil {
-			authenticator = buildAuthenticator(cfg)
+			if a, err := buildAuthenticator(cfg); err != nil {
+				slog.Error("build authenticator failed, denying all auth", "err", err)
+				authenticator = &auth.DenyAll{}
+			} else {
+				authenticator = a
+			}
 		}
 		if store == nil {
 			if cfg.WalDir != "" && cfg.WalDir != "-" {

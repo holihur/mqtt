@@ -23,6 +23,29 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// findFileACLs locates the live FileACL(s) inside b.auth so the reload
+// watcher can reach them regardless of composition (bare, in a Chain, or
+// wrapped by authorizeOnly).
+func (b *Broker) findFileACLs() []*auth.FileACL {
+	var out []*auth.FileACL
+	switch a := b.auth.(type) {
+	case *auth.FileACL:
+		out = append(out, a)
+	case *auth.Chain:
+		for _, x := range a.Auths {
+			switch v := x.(type) {
+			case *auth.FileACL:
+				out = append(out, v)
+			case authorizeOnly:
+				if f, ok := v.inner.(*auth.FileACL); ok {
+					out = append(out, f)
+				}
+			}
+		}
+	}
+	return out
+}
+
 func (b *Broker) watchACL(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -31,21 +54,11 @@ func (b *Broker) watchACL(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if acl, ok := b.auth.(*auth.FileACL); ok {
-				if reloaded, err := acl.Reload(); err != nil {
+			for _, facl := range b.findFileACLs() {
+				if reloaded, err := facl.Reload(); err != nil {
 					slog.Warn("acl reload failed", "err", err)
 				} else if reloaded {
 					slog.Info("acl reloaded", "path", b.cfg.ACLFile)
-				}
-			} else if chain, ok := b.auth.(*auth.Chain); ok {
-				for _, a := range chain.Auths {
-					if facl, ok := a.(*auth.FileACL); ok {
-						if reloaded, err := facl.Reload(); err != nil {
-							slog.Warn("acl reload failed", "err", err)
-						} else if reloaded {
-							slog.Info("acl reloaded", "path", b.cfg.ACLFile)
-						}
-					}
 				}
 			}
 		}
@@ -98,7 +111,12 @@ func (b *Broker) initStart(ctx context.Context) (context.Context, error) {
 		b.store = persistence.NewMemoryStore()
 	}
 	if b.auth == nil {
-		b.auth = buildAuthenticator(b.cfg)
+		if a, err := buildAuthenticator(b.cfg); err != nil {
+			slog.Error("build authenticator failed, denying all auth", "err", err)
+			b.auth = &auth.DenyAll{}
+		} else {
+			b.auth = a
+		}
 		if aa := hook.NewAuthAdapter(b.auth); aa != nil {
 			b.hooks.Register(aa)
 		}
@@ -174,6 +192,7 @@ func (b *Broker) Start(ctx context.Context) error {
 	tlsCfg := b.cfg.TLSConfig
 	b.listener = transport.NewListener(b.cfg.TCPAddr, tlsCfg, b.cfg.WSAddr)
 	b.listener.SetWsAllowOrigins(b.cfg.WsAllowOrigins)
+	b.listener.SetMaxPacketSize(b.cfg.MaxPacketSize)
 	if b.customListener != nil {
 		b.listener.SetCustomListener(b.customListener)
 	}
@@ -199,6 +218,7 @@ func (b *Broker) StartAsync(ctx context.Context) error {
 	tlsCfg := b.cfg.TLSConfig
 	b.listener = transport.NewListener(b.cfg.TCPAddr, tlsCfg, b.cfg.WSAddr)
 	b.listener.SetWsAllowOrigins(b.cfg.WsAllowOrigins)
+	b.listener.SetMaxPacketSize(b.cfg.MaxPacketSize)
 	if b.customListener != nil {
 		b.listener.SetCustomListener(b.customListener)
 	}

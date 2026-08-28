@@ -142,6 +142,44 @@ func TestDBAuthACLAllowAndDeny(t *testing.T) {
 	}
 }
 
+// Regression: requesting a filter BROADER than the granted pattern must be denied.
+// The ACL pattern authorizes topics; the requested subscription filter must be
+// covered by it. Subscribing "#" with only "tenant/t42/#" granted leaks the
+// whole broker and must fail.
+func TestDBAuthACLDenyBroaderFilterThanPattern(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+	hash, _ := bcrypt.GenerateFromPassword([]byte("pass"), bcrypt.MinCost)
+	rows := sqlmock.NewRows([]string{"password_hash", "status"}).AddRow(string(hash), "active")
+	mock.ExpectQuery("SELECT password_hash").WithArgs("alice").WillReturnRows(rows)
+	h, _ := NewDBAuthHook(db, DBAuthConfig{
+		UsersQuery: "SELECT password_hash, status FROM users WHERE username = ?",
+		ACLQuery:   "SELECT topic_pattern FROM acl WHERE username = ?",
+		Hasher:     BcryptHasher{},
+	})
+	if err := h.OnAuth("c1", "alice", []byte("pass")); err != nil {
+		t.Fatalf("auth fail: %v", err)
+	}
+	// exact pattern filter itself is allowed
+	mock.ExpectQuery("SELECT topic_pattern").WithArgs("alice").WillReturnRows(sqlmock.NewRows([]string{"topic_pattern"}).AddRow("tenant/t42/#"))
+	if err := h.OnSubscribe("c1", "tenant/t42/#", 0); err != nil {
+		t.Fatalf("exact pattern filter should be allowed: %v", err)
+	}
+	// broader filter "#" must be denied
+	mock.ExpectQuery("SELECT topic_pattern").WithArgs("alice").WillReturnRows(sqlmock.NewRows([]string{"topic_pattern"}).AddRow("tenant/t42/#"))
+	if err := h.OnSubscribe("c1", "#", 0); !isDenied(err) {
+		t.Fatalf("subscribe # with only tenant/t42/# granted should be denied, got %v", err)
+	}
+	// broader wildcard filter must be denied too
+	mock.ExpectQuery("SELECT topic_pattern").WithArgs("alice").WillReturnRows(sqlmock.NewRows([]string{"topic_pattern"}).AddRow("sensor/+/temp"))
+	if err := h.OnSubscribe("c1", "sensor/#", 0); !isDenied(err) {
+		t.Fatalf("subscribe sensor/# with only sensor/+/temp granted should be denied, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDBAuthACLNoQueryAllows(t *testing.T) {
 	db, _, _ := sqlmock.New()
 	defer db.Close()
@@ -154,10 +192,11 @@ func TestDBAuthACLNoQueryAllows(t *testing.T) {
 	}
 }
 
-func TestDBAuthAnonAllowed(t *testing.T) {
+// Regression: empty username must NOT bypass DB authentication.
+func TestDBAuthAnonDenied(t *testing.T) {
 	h := &DBAuthHook{queryTimeout: 0}
-	if err := h.OnAuth("c1", "", []byte("")); err != nil {
-		t.Fatalf("anon should pass")
+	if err := h.OnAuth("c1", "", []byte("")); !isDenied(err) {
+		t.Fatalf("empty username should be denied, got %v", err)
 	}
 }
 

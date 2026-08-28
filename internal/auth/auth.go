@@ -33,7 +33,9 @@ type SimpleAuth struct {
 
 func (s *SimpleAuth) Authenticate(_, username string, password []byte) bool {
 	if len(s.Users) == 0 {
-		return true
+		// no users configured = nobody may authenticate (fail-closed);
+		// open deployments must opt in explicitly via AllowAll
+		return false
 	}
 	expect, ok := s.Users[username]
 	if !ok {
@@ -77,7 +79,7 @@ func (j *JWTAuth) Authenticate(clientID, username string, password []byte) bool 
 	if !strings.Contains(tokenStr, ".") {
 		return false
 	}
-	parser := jwt.NewParser(jwt.WithValidMethods([]string{"HS256", "HS384", "HS512"}))
+	parser := jwt.NewParser(jwt.WithValidMethods([]string{"HS256", "HS384", "HS512"}), jwt.WithExpirationRequired())
 	token, err := parser.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
 		return []byte(j.Secret), nil
 	})
@@ -98,12 +100,16 @@ func (j *JWTAuth) Authenticate(clientID, username string, password []byte) bool 
 }
 
 type FileACL struct {
-	AllowAll
 	mu    sync.RWMutex
 	rules []aclRule
 	path  string
 	mtime time.Time
 }
+
+// Authenticate always fails: an ACL file grants topic permissions, it is not
+// a credential source. Composing code must pair it with a real authenticator
+// (or an explicit AllowAnonymous opt-in).
+func (f *FileACL) Authenticate(_, _ string, _ []byte) bool { return false }
 
 type aclRule struct {
 	Username string

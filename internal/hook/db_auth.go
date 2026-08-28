@@ -80,7 +80,9 @@ func (h *DBAuthHook) ID() string { return "db-auth" }
 
 func (h *DBAuthHook) OnAuth(clientID, username string, password []byte) error {
 	if username == "" {
-		return nil
+		// anonymous access must be an explicit deployment decision (broker-level
+		// AllowAnonymous), never a silent bypass of the DB credential check
+		return ErrDenied
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), h.queryTimeout)
 	defer cancel()
@@ -173,7 +175,7 @@ func (h *DBAuthHook) checkACL(clientID, requested string) error {
 		return ErrDenied
 	}
 	for _, pat := range patterns {
-		if pat == requested || topic.MatchFilter(requested, pat) || topic.MatchFilter(pat, requested) {
+		if pat == requested || topic.MatchFilter(requested, pat) {
 			return nil
 		}
 		if Match(pat, requested) {
