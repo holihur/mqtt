@@ -70,6 +70,62 @@ WebSocket: `ws://localhost:8083/mqtt`
 - -node  <id>            节点 ID
 ```
 
+## 消息持久化 (SQL 历史消息)
+
+默认 broker 只持久化 retain/session/离线队列，普通 PUBLISH 仅存内存、重启即丢。
+可通过 hook 将**全部 PUBLISH 异步批量写入 SQL**（PostgreSQL / MySQL / SQLite），
+用于历史查询、审计、BI 分析。
+
+```bash
+# SQLite (文件路径)
+./bin/broker -msg-persist-dsn ./data/mqtt_messages.db
+
+# PostgreSQL (需先建表，见下方 DDL；hook 自动用 $1..$7 占位符)
+./bin/broker -msg-persist-dsn "postgres://user:pass@localhost/mqtt?sslmode=disable" \
+  -msg-persist-batch-size 1000 -msg-persist-flush-interval 5s
+
+# 可选参数
+-msg-persist-table <表名>            默认 mqtt_messages
+-msg-persist-batch-size <n>          每批条数, 默认 1000
+-msg-persist-flush-interval <d>      最大积压时间, 默认 5s
+-msg-persist-queue-capacity <n>      内存队列容量, 默认 10000
+-msg-persist-drop-policy drop|block  队列满策略, 默认 drop (不阻塞发布路径)
+-msg-persist-skip-retain             跳过 retain 消息
+-msg-persist-node-id <id>            落库节点 ID (默认取 -node)
+```
+
+PostgreSQL DDL（`created_at` 为 unix 毫秒，`message_expiry` 保留列，hook 不感知 MQTT 过期）：
+
+```sql
+CREATE TABLE mqtt_messages (
+    id BIGSERIAL PRIMARY KEY,
+    client_id VARCHAR(256),
+    topic VARCHAR(512) NOT NULL,
+    payload BYTEA,
+    qos SMALLINT,
+    retain BOOLEAN,
+    node_id VARCHAR(50),
+    created_at BIGINT NOT NULL,
+    message_expiry INT DEFAULT 0
+);
+CREATE INDEX idx_topic ON mqtt_messages (topic);
+CREATE INDEX idx_client_time ON mqtt_messages (client_id, created_at);
+CREATE INDEX idx_created ON mqtt_messages (created_at);
+```
+
+也可编程方式注入任意 SQL 驱动（hook 模式，见 `internal/hook/message_persister.go` 与
+`examples/hook/message_persister`）：
+
+```go
+h, _ := hook.NewMessagePersisterHook(db, hook.MessagePersisterConfig{BatchSize: 1000})
+b.RegisterHook(h)
+defer h.Close()
+```
+
+设计要点：`OnPublish` 永远返回 nil（不拒绝/不阻塞路由），先复制 payload 再入队
+（broker 的 packet 缓冲会被复用），批量事务写入失败即丢弃并计入 `InsertErrors`
+（at-most-once），队列满时按 `drop-policy` 丢弃（默认立即丢弃，不阻塞发布路径）。
+
 ## 安全与扩展
 
 - **Auth**：`AllowAll` / `SimpleAuth` / `JWT (HS256)` / `FileACL`（`--jwt-secret/--acl`），支持 `Chain`

@@ -2,18 +2,23 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"mqtt/internal/broker"
+	"mqtt/internal/hook"
 	"mqtt/internal/logger"
 	"mqtt/internal/persistence"
 
+	_ "github.com/lib/pq"
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -64,6 +69,15 @@ func main() {
 		walEnabled            = flag.Bool("wal", true, "enable WAL (default true, uses Store interface, pebble is one impl)")
 		wsAllowOrigins        = flag.String("ws-allow-origins", "", "WS allowed origins, comma separated or \"*\" for all; empty means same-origin + empty Origin only")
 		showVersion           = flag.Bool("version", false, "print version and exit")
+		msgPersistDSN         = flag.String("msg-persist-dsn", "", "SQL DSN for message persistence (empty to disable); postgres://... for PostgreSQL, a file path for SQLite")
+		msgPersistTable       = flag.String("msg-persist-table", "mqtt_messages", "message persistence table name")
+		msgPersistBatchSize   = flag.Int("msg-persist-batch-size", 1000, "messages per batch insert")
+		msgPersistFlushInt    = flag.Duration("msg-persist-flush-interval", 5*time.Second, "max time between batch flushes")
+		msgPersistQueueCap    = flag.Int("msg-persist-queue-capacity", 10000, "in-memory queue capacity before the DB worker")
+		msgPersistDropPolicy  = flag.String("msg-persist-drop-policy", "drop", "queue-full policy: drop (non-blocking) or block (wait up to block-timeout)")
+		msgPersistBlockTO     = flag.Duration("msg-persist-block-timeout", 100*time.Millisecond, "max wait when queue is full and drop-policy=block")
+		msgPersistNodeID      = flag.String("msg-persist-node-id", "", "node id recorded in persisted rows (defaults to -node)")
+		msgPersistSkipRetain  = flag.Bool("msg-persist-skip-retain", false, "skip persist retain messages")
 	)
 	flag.Parse()
 	if *showVersion {
@@ -118,6 +132,57 @@ func main() {
 	}
 	defer func() { _ = store.Close() }()
 
+	// 可选的消息持久化 hook: 把全部 PUBLISH 异步批量写入 SQL (issue #5)。
+	// 只写不查: 查询走 SQL/OctoSQL 直连数据库。
+	var msgPersistHook *hook.MessagePersisterHook
+	var msgPersistDB *sql.DB
+	if *msgPersistDSN != "" {
+		driver, dsn := "sqlite3", *msgPersistDSN
+		if strings.HasPrefix(*msgPersistDSN, "postgres://") || strings.HasPrefix(*msgPersistDSN, "postgresql://") {
+			driver, dsn = "postgres", *msgPersistDSN
+		}
+		pdb, err := sql.Open(driver, dsn)
+		if err != nil {
+			slog.Error("msg persister open failed", "dsn", *msgPersistDSN, "err", err)
+			os.Exit(1)
+		}
+		pingCtx, pingCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		pingErr := pdb.PingContext(pingCtx)
+		pingCancel()
+		if pingErr != nil {
+			slog.Error("msg persister ping failed", "dsn", *msgPersistDSN, "err", pingErr)
+			_ = pdb.Close()
+			os.Exit(1)
+		}
+		persistNode := *msgPersistNodeID
+		if persistNode == "" {
+			persistNode = *nodeID
+		}
+		ph, err := hook.NewMessagePersisterHook(pdb, hook.MessagePersisterConfig{
+			TableName:     *msgPersistTable,
+			BatchSize:     *msgPersistBatchSize,
+			FlushInterval: *msgPersistFlushInt,
+			QueueCapacity: *msgPersistQueueCap,
+			DropPolicy:    *msgPersistDropPolicy,
+			BlockTimeout:  *msgPersistBlockTO,
+			NodeID:        persistNode,
+			SkipRetain:    *msgPersistSkipRetain,
+		})
+		if err != nil {
+			slog.Error("msg persister init failed", "err", err)
+			_ = pdb.Close()
+			os.Exit(1)
+		}
+		msgPersistHook, msgPersistDB = ph, pdb
+		slog.Info("message persistence enabled", "driver", driver, "table", *msgPersistTable, "batchSize", *msgPersistBatchSize, "flushInterval", *msgPersistFlushInt)
+	}
+	if msgPersistHook != nil {
+		defer func() {
+			_ = msgPersistHook.Close()
+			_ = msgPersistDB.Close()
+		}()
+	}
+
 	allowAnon := *allowAnonymous == "true"
 	walDirCfg := ""
 	if *walEnabled && *walDir != "" && *walDir != "-" {
@@ -143,7 +208,11 @@ func main() {
 		WalDir:                walDirCfg,
 		WsAllowOrigins:        wsOrigins,
 	}
-	b, err := broker.NewWithOptions(cfg, broker.WithStore(store))
+	opts := []broker.Option{broker.WithStore(store)}
+	if msgPersistHook != nil {
+		opts = append(opts, broker.WithHook(msgPersistHook))
+	}
+	b, err := broker.NewWithOptions(cfg, opts...)
 	if err != nil {
 		slog.Error("broker init failed", "err", err)
 		os.Exit(1)
