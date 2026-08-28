@@ -450,10 +450,10 @@ func TestDecodePublishV5PropsLengthZeroVsV3(t *testing.T) {
 	}
 }
 
-func uint16Ptr(v uint16) *uint16  { return &v }
-func uint32Ptr(v uint32) *uint32  { return &v }
-func strPtr(s string) *string     { return &s }
-func bytePtr(b byte) *byte        { return &b }
+func uint16Ptr(v uint16) *uint16 { return &v }
+func uint32Ptr(v uint32) *uint32 { return &v }
+func strPtr(s string) *string    { return &s }
+func bytePtr(b byte) *byte       { return &b }
 
 // TestDecodeRoundtripInvariant verifies that encode→decode→encode produces
 // a consistent result for various property combinations. This catches

@@ -153,8 +153,8 @@ func FuzzDecodeSubackV3ReasonCodeLoss(f *testing.F) {
 // FuzzDecodeRoundtripProperties verifies that encode→decode→encode is stable
 // for properties blocks, catching asymmetries.
 func FuzzDecodeRoundtripProperties(f *testing.F) {
-	f.Add([]byte{0x00}) // empty
-	f.Add([]byte{0x02, 0x23, 0x00, 0x01}) // TopicAlias=1
+	f.Add([]byte{0x00})                               // empty
+	f.Add([]byte{0x02, 0x23, 0x00, 0x01})             // TopicAlias=1
 	f.Add([]byte{0x06, 0x11, 0x00, 0x00, 0x00, 0x3C}) // SessionExpiryInterval=60
 
 	f.Fuzz(func(t *testing.T, data []byte) {
