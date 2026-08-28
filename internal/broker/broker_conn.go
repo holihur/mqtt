@@ -100,22 +100,21 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 		sess.Mu.Lock()
 		oldUsername := sess.Username
 		sess.Mu.Unlock()
+		// a persistent session stays bound to the username that created it —
+		// enforce this even when the original connection is already offline,
+		// otherwise anyone who learns the clientID can inherit the session
+		// (subscriptions + offline queue) while the owner is away
 		if oldUsername != "" && pkt.Username != oldUsername {
-			b.mu.RLock()
-			_, hasOldConn := b.conns[clientID]
-			b.mu.RUnlock()
-			if hasOldConn {
-				mqttPacketDropped.WithLabelValues("session_hijack").Inc()
-				slog.Warn("session hijack attempt", "client", clientID, "oldUser", oldUsername, "newUser", pkt.Username, "addr", raw.RemoteAddr().String())
-				reason := byte(0x04)
-				if pkt.Version == codec.ProtocolV5 {
-					reason = 0x86
-				}
-				resp := &codec.Packet{Type: codec.TypeCONNACK, Version: pkt.Version, ReasonCode: reason}
-				_ = b.sendPacket(conn, resp)
-				_ = conn.Close()
-				return
+			mqttPacketDropped.WithLabelValues("session_hijack").Inc()
+			slog.Warn("session hijack attempt", "client", clientID, "oldUser", oldUsername, "newUser", pkt.Username, "addr", raw.RemoteAddr().String())
+			reason := byte(0x04)
+			if pkt.Version == codec.ProtocolV5 {
+				reason = 0x86
 			}
+			resp := &codec.Packet{Type: codec.TypeCONNACK, Version: pkt.Version, ReasonCode: reason}
+			_ = b.sendPacket(conn, resp)
+			_ = conn.Close()
+			return
 		}
 	}
 	sess.Mu.Lock()
@@ -128,6 +127,12 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 	if pkt.Version == codec.ProtocolV5 && pkt.Properties != nil {
 		if pkt.Properties.ReceiveMaximum != nil {
 			sess.ReceiveMaximum = *pkt.Properties.ReceiveMaximum
+			// never adopt a window larger than what the server is willing to
+			// buffer — a client declaring 65535 must not pin that many
+			// unacked payload copies in memory
+			if maxW := uint16(b.cfg.MaxInflightWindow); sess.ReceiveMaximum > maxW {
+				sess.ReceiveMaximum = maxW
+			}
 		}
 		if pkt.Properties.MaximumPacketSize != nil {
 			sess.MaximumPacketSize = *pkt.Properties.MaximumPacketSize
@@ -151,6 +156,9 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 	}
 	sess.CleanStart = clean
 	sess.ExpiryInterval = expiry
+	if maxW := uint16(b.cfg.MaxInflightWindow); sess.ReceiveMaximum > maxW {
+		sess.ReceiveMaximum = maxW
+	}
 	sess.Mu.Unlock()
 	atomic.StoreInt64(&b.stats.ClientsConnected, int64(len(b.conns))+1)
 	atomic.AddInt64(&b.stats.ClientsTotal, 1)
@@ -217,7 +225,7 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 		if pkt.ClientID == "" {
 			props.AssignedClientID = &clientID
 		}
-		rm := uint16(65535)
+		rm := uint16(b.cfg.MaxInflightWindow)
 		props.ReceiveMaximum = &rm
 		ssa := byte(1)
 		props.SharedSubAvailable = &ssa
@@ -233,7 +241,7 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 	}
 	b.debugPacket("send", clientID, connack)
 	slog.Info("client connected", "client", clientID, "addr", raw.RemoteAddr().String(), "sessionPresent", sessionPresent, "version", pkt.Version, "clean", pkt.ConnectFlags.CleanSession)
-	for filter, qos := range sess.Subscriptions {
+	for filter, qos := range sess.SubscriptionsSnapshot() {
 		b.trie.Add(filter, clientID, qos, false)
 	}
 
@@ -247,6 +255,12 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 		for _, m := range offline {
 			if m.IsExpired() {
 				mqttPacketDropped.WithLabelValues("message_expiry").Inc()
+				continue
+			}
+			// ACLs may have tightened since the message was queued — re-check
+			// before replaying to the reconnected client
+			if !b.auth.Authorize(clientID, m.Topic, false) {
+				mqttPacketDropped.WithLabelValues("offline_acl").Inc()
 				continue
 			}
 			pub := &codec.Packet{

@@ -27,7 +27,27 @@ func (b *Broker) handleSubscribe(conn *transport.Conn, sess *session.Session, pk
 		return
 	}
 	var codes []byte
+	// existing subscription count for the per-client cap
+	existing := sess.SubscriptionsSnapshot()
+	active := len(existing)
+	// retained scan is expensive (full store iteration) — do it once per
+	// packet, not once per filter
+	retained, err := b.store.ListRetained(bgCtx())
+	if err != nil {
+		slog.Warn("list retained failed", "err", err)
+		retained = nil
+	}
 	for _, sub := range pkt.Subscriptions {
+		_, already := existing[sub.Filter]
+		if !already && active >= b.cfg.MaxSubscriptionsPerClient {
+			mqttPacketDropped.WithLabelValues("subscription_cap").Inc()
+			if sess.Version == codec.ProtocolV5 {
+				codes = append(codes, 0x97) // quota exceeded
+			} else {
+				codes = append(codes, 0x80)
+			}
+			continue
+		}
 		if !topic.IsValidFilter(sub.Filter) {
 			codes = append(codes, 0x80) // failure
 			continue
@@ -80,7 +100,9 @@ func (b *Broker) handleSubscribe(conn *transport.Conn, sess *session.Session, pk
 				b.sharedSubs[group][realFilter] = append(b.sharedSubs[group][realFilter], sess.ClientID)
 			}
 			b.sharedMu.Unlock()
-			sess.Subscriptions[sub.Filter] = sub.QoS
+			sess.SetSubscription(sub.Filter, sub.QoS)
+			existing[sub.Filter] = sub.QoS
+			active++
 			if err := b.store.SaveSession(bgCtx(), sess); err != nil {
 				slog.Warn("store SaveSession failed", "err", err)
 			}
@@ -90,7 +112,9 @@ func (b *Broker) handleSubscribe(conn *transport.Conn, sess *session.Session, pk
 			}
 		} else {
 			b.trie.Add(sub.Filter, sess.ClientID, sub.QoS, sub.NoLocal)
-			sess.Subscriptions[sub.Filter] = sub.QoS
+			sess.SetSubscription(sub.Filter, sub.QoS)
+			existing[sub.Filter] = sub.QoS
+			active++
 			if err := b.store.SaveSession(bgCtx(), sess); err != nil {
 				slog.Warn("store SaveSession failed", "err", err)
 			}
@@ -101,10 +125,6 @@ func (b *Broker) handleSubscribe(conn *transport.Conn, sess *session.Session, pk
 		}
 
 		// deliver retained messages matching this filter (filter expired)
-		retained, err := b.store.ListRetained(bgCtx())
-		if err != nil {
-			slog.Warn("list retained failed", "err", err)
-		}
 		for _, m := range retained {
 			if m.IsExpired() {
 				_ = b.store.DeleteRetained(bgCtx(), m.Topic)
@@ -177,7 +197,7 @@ func (b *Broker) handleUnsubscribe(conn *transport.Conn, sess *session.Session, 
 		} else {
 			b.trie.Remove(t, sess.ClientID)
 		}
-		delete(sess.Subscriptions, t)
+		sess.DeleteSubscription(t)
 		if b.cluster != nil {
 			_ = b.cluster.PublishMeta(bgCtx(), "unsub", t)
 		}

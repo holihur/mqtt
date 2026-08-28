@@ -100,6 +100,38 @@ func (s *Session) AddInflight(e *InflightEntry) {
 	s.Inflight[e.PacketID] = e
 	s.Mu.Unlock()
 }
+
+// Subscriptions map is accessed from the subscriber's readLoop (writes) and
+// publisher goroutines (reads) concurrently — always go through these helpers.
+
+func (s *Session) SetSubscription(filter string, qos byte) {
+	s.Mu.Lock()
+	s.Subscriptions[filter] = qos
+	s.Mu.Unlock()
+}
+
+func (s *Session) DeleteSubscription(filter string) {
+	s.Mu.Lock()
+	delete(s.Subscriptions, filter)
+	s.Mu.Unlock()
+}
+
+func (s *Session) GetSubscription(filter string) (byte, bool) {
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+	q, ok := s.Subscriptions[filter]
+	return q, ok
+}
+
+func (s *Session) SubscriptionsSnapshot() map[string]byte {
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+	out := make(map[string]byte, len(s.Subscriptions))
+	for f, q := range s.Subscriptions {
+		out[f] = q
+	}
+	return out
+}
 func (s *Session) RemoveInflight(id uint16) {
 	s.Mu.Lock()
 	delete(s.Inflight, id)

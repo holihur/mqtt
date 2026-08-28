@@ -23,13 +23,23 @@ type Listener struct {
 
 	wsAllowOrigins map[string]struct{}
 	wsAllowAll     bool
+
+	// maxPacketSize bounds a single WS message so oversized frames are aborted
+	// at the header instead of buffered into memory (0 = 1MB default)
+	maxPacketSize int64
 }
 
 func NewListener(addr string, tlsCfg *tls.Config, wsAddr string) *Listener {
-	return &Listener{addr: addr, tlsCfg: tlsCfg, wsAddr: wsAddr, wsAllowOrigins: make(map[string]struct{})}
+	return &Listener{addr: addr, tlsCfg: tlsCfg, wsAddr: wsAddr, wsAllowOrigins: make(map[string]struct{}), maxPacketSize: 1 << 20}
 }
 
 func (l *Listener) SetCustomListener(ln net.Listener) { l.customListener = ln }
+
+func (l *Listener) SetMaxPacketSize(n int) {
+	if n > 0 {
+		l.maxPacketSize = int64(n)
+	}
+}
 
 func (l *Listener) SetWsAllowOrigins(origins []string) {
 	m := make(map[string]struct{}, len(origins))
@@ -190,6 +200,7 @@ func (l *Listener) serveWS(ctx context.Context, handle func(net.Conn)) {
 			<-wsSem
 			return
 		}
+		ws.SetReadLimit(l.maxPacketSize)
 		conn := &wsConn{Conn: ws, sem: wsSem}
 		handle(conn)
 	}

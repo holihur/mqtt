@@ -15,18 +15,20 @@ type Option func(*Broker) error
 // DefaultConfig 返回带合理默认值的 Config，供独立与嵌入式共用。
 func DefaultConfig() Config {
 	return Config{
-		TCPAddr:               ":1883",
-		WSAddr:                ":8083",
-		MaxPacketSize:         1 << 20,
-		MaxConnections:        20000,
-		MaxPublishPerSec:      100,
-		MaxSubscribePerSec:    20,
-		AllowAnonymous:        false,
-		MaxRetainedMessages:   10000,
-		MaxRetainedSize:       1 << 30,
-		MaxRetainPerTopic:     1000,
-		MaxRetainSizePerTopic: 100 << 20,
-		WalDir:                "./data/wal",
+		TCPAddr:                   ":1883",
+		WSAddr:                    ":8083",
+		MaxPacketSize:             1 << 20,
+		MaxConnections:            20000,
+		MaxPublishPerSec:          100,
+		MaxSubscribePerSec:        20,
+		AllowAnonymous:            false,
+		MaxRetainedMessages:       10000,
+		MaxRetainedSize:           1 << 30,
+		MaxRetainPerTopic:         1000,
+		MaxRetainSizePerTopic:     100 << 20,
+		MaxInflightWindow:         100,
+		MaxSubscriptionsPerClient: 128,
+		WalDir:                    "./data/wal",
 	}
 }
 
@@ -52,6 +54,12 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.MaxRetainPerTopic == 0 {
 		c.MaxRetainPerTopic = 1000
+	}
+	if c.MaxInflightWindow == 0 {
+		c.MaxInflightWindow = 100
+	}
+	if c.MaxSubscriptionsPerClient == 0 {
+		c.MaxSubscriptionsPerClient = 128
 	}
 	if c.MaxRetainSizePerTopic == 0 {
 		c.MaxRetainSizePerTopic = 100 << 20

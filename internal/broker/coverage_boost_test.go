@@ -1124,7 +1124,10 @@ func TestPacketHexValid(t *testing.T) {
 
 func TestBuildAuthenticatorAllowAll(t *testing.T) {
 	cfg := Config{AllowAnonymous: true}
-	a := buildAuthenticator(cfg)
+	a, err := buildAuthenticator(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, ok := a.(*auth.AllowAll); !ok {
 		t.Fatalf("expected AllowAll, got %T", a)
 	}
@@ -1132,7 +1135,10 @@ func TestBuildAuthenticatorAllowAll(t *testing.T) {
 
 func TestBuildAuthenticatorDenyAll(t *testing.T) {
 	cfg := Config{AllowAnonymous: false}
-	a := buildAuthenticator(cfg)
+	a, err := buildAuthenticator(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, ok := a.(*auth.DenyAll); !ok {
 		t.Fatalf("expected DenyAll, got %T", a)
 	}
@@ -1140,7 +1146,10 @@ func TestBuildAuthenticatorDenyAll(t *testing.T) {
 
 func TestBuildAuthenticatorJWT(t *testing.T) {
 	cfg := Config{JWTSecret: "secret"}
-	a := buildAuthenticator(cfg)
+	a, err := buildAuthenticator(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, ok := a.(*auth.JWTAuth); !ok {
 		t.Fatalf("expected JWTAuth, got %T", a)
 	}
@@ -1148,10 +1157,8 @@ func TestBuildAuthenticatorJWT(t *testing.T) {
 
 func TestBuildAuthenticatorChain(t *testing.T) {
 	cfg := Config{JWTSecret: "secret", ACLFile: "/nonexistent"}
-	a := buildAuthenticator(cfg)
-	// ACLFile load will fail, so chain may have just JWT
-	if a == nil {
-		t.Fatal("expected non-nil authenticator")
+	if _, err := buildAuthenticator(cfg); err == nil {
+		t.Fatal("bad ACL file must fail construction (fail-closed)")
 	}
 }
 

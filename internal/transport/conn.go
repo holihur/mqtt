@@ -23,14 +23,19 @@ type Conn struct {
 	closed   bool
 	mu       sync.Mutex
 	onClose  func()
+
+	// writeTimeout bounds each WritePacket so a stalled peer cannot pin the
+	// calling goroutine forever (writes are synchronous in deliver paths)
+	writeTimeout time.Duration
 }
 
 func NewConn(raw net.Conn, maxPacketSize int) *Conn {
 	return &Conn{
-		raw:     raw,
-		reader:  bufio.NewReader(raw),
-		parser:  parser.NewReader(raw, maxPacketSize),
-		version: 0,
+		raw:          raw,
+		reader:       bufio.NewReader(raw),
+		parser:       parser.NewReader(raw, maxPacketSize),
+		version:      0,
+		writeTimeout: 10 * time.Second,
 	}
 }
 
@@ -83,6 +88,9 @@ func (c *Conn) WritePacket(p *codec.Packet) error {
 	}
 	c.writerMu.Lock()
 	defer c.writerMu.Unlock()
+	if c.writeTimeout > 0 {
+		_ = c.raw.SetWriteDeadline(time.Now().Add(c.writeTimeout))
+	}
 	_, err = c.raw.Write(data)
 	return err
 }
