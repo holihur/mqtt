@@ -40,6 +40,8 @@ jobs:
         run: go vet ./...
 
       - name: Install Task
+        env:
+          GOTOOLCHAIN: auto
         run: |
           go install github.com/go-task/task/v3/cmd/task@latest
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
