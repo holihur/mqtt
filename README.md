@@ -79,18 +79,18 @@ WebSocket: `ws://localhost:8083/mqtt`
 
 ## 基准与压测（CI 自动更新）
 <!-- BENCH_START -->
-> 更新: 2026-08-28 01:30 UTC | goos: linux goarch: amd64 | cpu: AMD EPYC 7763 64-Core Processor                
+> 更新: 2026-08-28 04:38 UTC | goos: linux goarch: amd64 | cpu: Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz
 >
 > ```
 > goos: linux
 goarch: amd64
-cpu: AMD EPYC 7763 64-Core Processor                
-Benchmark10kClients-4          	       1	    696159 ns/op	   18760 B/op	      96 allocs/op
-BenchmarkPublishThroughput-4   	       1	     25909 ns/op	     176 B/op	       5 allocs/op
+cpu: Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz
+Benchmark10kClients-4          	       1	    880464 ns/op	   18312 B/op	      92 allocs/op
+BenchmarkPublishThroughput-4   	       1	     18592 ns/op	     488 B/op	       6 allocs/op
 > ```
 >
-> - Benchmark10kClients-4 1 696159 ns/op 18760 B/op 96 allocs/op
-> - BenchmarkPublishThroughput-4 1 25909 ns/op 176 B/op 5 allocs/op
+> - Benchmark10kClients-4 1 880464 ns/op 18312 B/op 92 allocs/op
+> - BenchmarkPublishThroughput-4 1 18592 ns/op 488 B/op 6 allocs/op
 > - 详见 [`docs/bench.md`](docs/bench.md) 与 Artifacts `bench.txt`/`c10k.txt`
 
 <!-- BENCH_END -->
