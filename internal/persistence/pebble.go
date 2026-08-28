@@ -202,6 +202,83 @@ func (p *PebbleStore) ClearOffline(_ context.Context, clientID string) error {
 	return err
 }
 
+func (p *PebbleStore) SavePendingWill(_ context.Context, w *PendingWill) error {
+	data, err := json.Marshal(w)
+	if err != nil {
+		return err
+	}
+	return p.db.Set([]byte(p.key("pending-will", w.ClientID)), data, pebble.Sync)
+}
+func (p *PebbleStore) DeletePendingWill(_ context.Context, clientID string) error {
+	err := p.db.Delete([]byte(p.key("pending-will", clientID)), pebble.Sync)
+	if err == pebble.ErrNotFound {
+		return nil
+	}
+	return err
+}
+func (p *PebbleStore) ListPendingWills(_ context.Context) ([]*PendingWill, error) {
+	prefix := p.key("pending-will", "")
+	iter, err := p.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte(prefix),
+		UpperBound: []byte(prefix + "\xff"),
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+	var out []*PendingWill
+	for iter.First(); iter.Valid(); iter.Next() {
+		if !strings.HasPrefix(string(iter.Key()), prefix) {
+			continue
+		}
+		var w PendingWill
+		if err := json.Unmarshal(iter.Value(), &w); err != nil {
+			continue
+		}
+		out = append(out, &w)
+	}
+	return out, nil
+}
+func (p *PebbleStore) SavePendingRetry(_ context.Context, r *PendingRetry) error {
+	data, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	key := p.key("pending-retry", fmt.Sprintf("%s:%d", r.ClientID, r.PacketID))
+	return p.db.Set([]byte(key), data, pebble.Sync)
+}
+func (p *PebbleStore) DeletePendingRetry(_ context.Context, clientID string, packetID uint16) error {
+	key := p.key("pending-retry", fmt.Sprintf("%s:%d", clientID, packetID))
+	err := p.db.Delete([]byte(key), pebble.Sync)
+	if err == pebble.ErrNotFound {
+		return nil
+	}
+	return err
+}
+func (p *PebbleStore) ListPendingRetries(_ context.Context) ([]*PendingRetry, error) {
+	prefix := p.key("pending-retry", "")
+	iter, err := p.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte(prefix),
+		UpperBound: []byte(prefix + "\xff"),
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+	var out []*PendingRetry
+	for iter.First(); iter.Valid(); iter.Next() {
+		if !strings.HasPrefix(string(iter.Key()), prefix) {
+			continue
+		}
+		var r PendingRetry
+		if err := json.Unmarshal(iter.Value(), &r); err != nil {
+			continue
+		}
+		out = append(out, &r)
+	}
+	return out, nil
+}
+
 func (p *PebbleStore) Close() error {
 	return p.db.Close()
 }

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"mqtt/internal/auth"
 	"mqtt/internal/cluster"
+	"mqtt/internal/codec"
 	"mqtt/internal/hook"
 	"mqtt/internal/persistence"
 	"mqtt/internal/session"
@@ -290,14 +291,101 @@ func (b *Broker) handleWill(sess *session.Session) {
 	if w.DelayInterval > 86400 {
 		w.DelayInterval = 86400
 	}
-	// delay
 	if w.DelayInterval > 0 {
+		deliverAt := time.Now().UnixMilli() + int64(w.DelayInterval)*1000
+		pw := &persistence.PendingWill{
+			ClientID:  clientID,
+			Topic:     w.Topic,
+			Payload:   w.Payload,
+			QoS:       w.QoS,
+			Retain:    w.Retain,
+			DeliverAt: deliverAt,
+		}
+		if err := b.store.SavePendingWill(bgCtx(), pw); err != nil {
+			slog.Warn("store SavePendingWill failed", "client", clientID, "err", err)
+		}
 		time.AfterFunc(time.Duration(w.DelayInterval)*time.Second, func() {
+			_ = b.store.DeletePendingWill(bgCtx(), clientID)
 			b.routeMessage(w.Topic, w.Payload, w.QoS, w.Retain, nil, clientID)
 		})
 		return
 	}
 	b.routeMessage(w.Topic, w.Payload, w.QoS, w.Retain, nil, clientID)
+}
+
+func (b *Broker) restorePendingWills() {
+	wills, err := b.store.ListPendingWills(bgCtx())
+	if err != nil {
+		slog.Warn("restore pending wills failed", "err", err)
+		return
+	}
+	now := time.Now().UnixMilli()
+	for _, w := range wills {
+		ww := w
+		delay := ww.DeliverAt - now
+		if delay <= 0 {
+			_ = b.store.DeletePendingWill(bgCtx(), ww.ClientID)
+			b.routeMessage(ww.Topic, ww.Payload, ww.QoS, ww.Retain, nil, ww.ClientID)
+			continue
+		}
+		time.AfterFunc(time.Duration(delay)*time.Millisecond, func() {
+			_ = b.store.DeletePendingWill(bgCtx(), ww.ClientID)
+			b.routeMessage(ww.Topic, ww.Payload, ww.QoS, ww.Retain, nil, ww.ClientID)
+		})
+	}
+	if len(wills) > 0 {
+		slog.Info("restored pending wills", "count", len(wills))
+	}
+}
+
+func (b *Broker) restorePendingRetries() {
+	retries, err := b.store.ListPendingRetries(bgCtx())
+	if err != nil {
+		slog.Warn("restore pending retries failed", "err", err)
+		return
+	}
+	now := time.Now().UnixMilli()
+	for _, r := range retries {
+		rr := r
+		delay := rr.NextRetryAt - now
+		if delay <= 0 {
+			b.mu.RLock()
+			sess, ok1 := b.sessions[rr.ClientID]
+			conn, ok2 := b.conns[rr.ClientID]
+			b.mu.RUnlock()
+			if ok1 && ok2 {
+				if e, ok := sess.GetInflight(rr.PacketID); ok {
+					e.Dup = true
+					pub := &codec.Packet{Type: codec.TypePUBLISH, Version: conn.Version(), Topic: e.Topic, QoS: e.QoS, Payload: e.Payload, PacketID: rr.PacketID, Dup: true}
+					_ = b.sendPacket(conn, pub)
+					b.scheduleRetry(rr.ClientID, rr.PacketID, rr.Retries+1)
+					continue
+				}
+			}
+			_ = b.store.DeletePendingRetry(bgCtx(), rr.ClientID, rr.PacketID)
+			continue
+		}
+		time.AfterFunc(time.Duration(delay)*time.Millisecond, func() {
+			b.mu.RLock()
+			sess, ok1 := b.sessions[rr.ClientID]
+			conn, ok2 := b.conns[rr.ClientID]
+			b.mu.RUnlock()
+			if !ok1 || !ok2 {
+				return
+			}
+			if e, ok := sess.GetInflight(rr.PacketID); ok {
+				e.Dup = true
+				pub := &codec.Packet{Type: codec.TypePUBLISH, Version: conn.Version(), Topic: e.Topic, QoS: e.QoS, Payload: e.Payload, PacketID: rr.PacketID, Dup: true}
+				_ = b.sendPacket(conn, pub)
+				b.scheduleRetry(rr.ClientID, rr.PacketID, rr.Retries+1)
+			} else {
+				_ = b.store.DeletePendingRetry(bgCtx(), rr.ClientID, rr.PacketID)
+			}
+		})
+	}
+	if len(retries) > 0 {
+		slog.Info("restored pending retries", "count", len(retries))
+	}
 }
 
 func (b *Broker) removeLimiter(clientID string) {

@@ -184,5 +184,82 @@ func (r *RedisStore) DequeueOffline(ctx context.Context, clientID string) ([]*Me
 func (r *RedisStore) ClearOffline(ctx context.Context, clientID string) error {
 	return r.cli.Del(ctx, r.key("offline", clientID)).Err()
 }
+func (r *RedisStore) SavePendingWill(ctx context.Context, w *PendingWill) error {
+	data, err := json.Marshal(w)
+	if err != nil {
+		return err
+	}
+	return r.cli.Set(ctx, r.key("pending-will", w.ClientID), data, 0).Err()
+}
+func (r *RedisStore) DeletePendingWill(ctx context.Context, clientID string) error {
+	return r.cli.Del(ctx, r.key("pending-will", clientID)).Err()
+}
+func (r *RedisStore) ListPendingWills(ctx context.Context) ([]*PendingWill, error) {
+	var keys []string
+	iter := r.cli.Scan(ctx, 0, r.key("pending-will", "*"), 0).Iterator()
+	for iter.Next(ctx) {
+		keys = append(keys, iter.Val())
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	vals, err := r.cli.MGet(ctx, keys...).Result()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*PendingWill, 0, len(vals))
+	for _, v := range vals {
+		s, ok := v.(string)
+		if !ok || s == "" {
+			continue
+		}
+		var w PendingWill
+		if err := json.Unmarshal([]byte(s), &w); err != nil {
+			continue
+		}
+		out = append(out, &w)
+	}
+	return out, nil
+}
+func (r *RedisStore) SavePendingRetry(ctx context.Context, rt *PendingRetry) error {
+	data, err := json.Marshal(rt)
+	if err != nil {
+		return err
+	}
+	key := r.key("pending-retry", fmt.Sprintf("%s:%d", rt.ClientID, rt.PacketID))
+	return r.cli.Set(ctx, key, data, 0).Err()
+}
+func (r *RedisStore) DeletePendingRetry(ctx context.Context, clientID string, packetID uint16) error {
+	key := r.key("pending-retry", fmt.Sprintf("%s:%d", clientID, packetID))
+	return r.cli.Del(ctx, key).Err()
+}
+func (r *RedisStore) ListPendingRetries(ctx context.Context) ([]*PendingRetry, error) {
+	var keys []string
+	iter := r.cli.Scan(ctx, 0, r.key("pending-retry", "*"), 0).Iterator()
+	for iter.Next(ctx) {
+		keys = append(keys, iter.Val())
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	vals, err := r.cli.MGet(ctx, keys...).Result()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*PendingRetry, 0, len(vals))
+	for _, v := range vals {
+		s, ok := v.(string)
+		if !ok || s == "" {
+			continue
+		}
+		var rt PendingRetry
+		if err := json.Unmarshal([]byte(s), &rt); err != nil {
+			continue
+		}
+		out = append(out, &rt)
+	}
+	return out, nil
+}
+
 func (r *RedisStore) Close() error                  { return r.cli.Close() }
 func (r *RedisStore) Client() redis.UniversalClient { return r.cli }

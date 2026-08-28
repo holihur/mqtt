@@ -449,7 +449,35 @@ func (b *Broker) scheduleRetry(clientID string, packetID uint16, retries int) {
 			mqttPacketDropped.WithLabelValues("retry_exceeded").Inc()
 			slog.Warn("retry exceeded, dropping inflight", "client", clientID, "packetID", packetID)
 		}
+		_ = b.store.DeletePendingRetry(bgCtx(), clientID, packetID)
 		return
+	}
+	b.mu.RLock()
+	sess, ok := b.sessions[clientID]
+	b.mu.RUnlock()
+	var topic string
+	var payload []byte
+	var qos byte
+	if ok {
+		if e, exists := sess.GetInflight(packetID); exists {
+			topic = e.Topic
+			payload = e.Payload
+			qos = e.QoS
+		}
+	}
+	nextAt := time.Now().UnixMilli() + 20*1000
+	pr := &persistence.PendingRetry{
+		ClientID:    clientID,
+		PacketID:    packetID,
+		Topic:       topic,
+		Payload:     payload,
+		QoS:         qos,
+		NextRetryAt: nextAt,
+		Retries:     retries,
+		CreatedAt:   time.Now().UnixMilli(),
+	}
+	if err := b.store.SavePendingRetry(bgCtx(), pr); err != nil {
+		slog.Warn("store SavePendingRetry failed", "client", clientID, "packetID", packetID, "err", err)
 	}
 	time.AfterFunc(20*time.Second, func() {
 		b.mu.RLock()
@@ -464,6 +492,8 @@ func (b *Broker) scheduleRetry(clientID string, packetID uint16, retries int) {
 			pub := &codec.Packet{Type: codec.TypePUBLISH, Version: conn.Version(), Topic: e.Topic, QoS: e.QoS, Payload: e.Payload, PacketID: packetID, Dup: true}
 			_ = b.sendPacket(conn, pub)
 			b.scheduleRetry(clientID, packetID, retries+1)
+		} else {
+			_ = b.store.DeletePendingRetry(bgCtx(), clientID, packetID)
 		}
 	})
 }
