@@ -87,8 +87,10 @@ func (b *Broker) allowSubscribe(clientID string) bool {
 func (b *Broker) checkRetainQuota(topic string, payload []byte) (bool, string) {
 	stats, err := b.store.GetRetainedStats(bgCtx())
 	if err != nil {
-		slog.Warn("GetRetainedStats failed", "err", err)
-		return false, ""
+		// fail closed: if we cannot read the quota we cannot enforce it,
+		// and allowing the write lets disk fill up while the backend errors
+		slog.Warn("GetRetainedStats failed, denying retain write", "err", err)
+		return true, "stats_unavailable"
 	}
 	newSize := int64(len(topic) + len(payload) + 10)
 	existingSize := int64(0)
@@ -330,7 +332,7 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 			continue
 		}
 		q := qos
-		if storedQoS, ok := sess.Subscriptions["$share/"+ch.group+"/"+ch.filter]; ok && storedQoS < q {
+		if storedQoS, ok := sess.GetSubscription("$share/" + ch.group + "/" + ch.filter); ok && storedQoS < q {
 			q = storedQoS
 		}
 		pub := &codec.Packet{Type: codec.TypePUBLISH, Version: conn.Version(), Topic: topicName, QoS: q, Payload: payload}
@@ -432,7 +434,7 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 			pub.PubProps = &codec.Properties{SubscriptionID: props.SubscriptionID}
 		}
 		mqttMessagesSent.Inc()
-		mqttInflight.Set(float64(len(sess.Inflight) + 1))
+		mqttInflight.Set(float64(sess.InflightCount() + 1))
 		if err := b.sendPacket(conn, pub); err != nil {
 			slog.Warn("deliver failed", "client", sub.ClientID, "err", err)
 		}
