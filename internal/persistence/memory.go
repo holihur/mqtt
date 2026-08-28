@@ -8,11 +8,11 @@ import (
 )
 
 type MemoryStore struct {
-	mu            sync.RWMutex
-	sessions      map[string]*session.Session
-	retained      map[string]*Message
-	offline       map[string][]*Message
-	pendingWills  map[string]*PendingWill
+	mu             sync.RWMutex
+	sessions       map[string]*session.Session
+	retained       map[string]*Message
+	offline        map[string][]*Message
+	pendingWills   map[string]*PendingWill
 	pendingRetries map[string]*PendingRetry
 }
 

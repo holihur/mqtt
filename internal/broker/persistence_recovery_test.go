@@ -212,10 +212,6 @@ func TestRetryPersistenceAndAckCleanup(t *testing.T) {
 	data, _ = codec.Encode(ack)
 	_, _ = sub.Write(data)
 	time.Sleep(200 * time.Millisecond)
-	list, _ = store.ListPendingRetries(context.Background())
-	// may still have 1 if broker re-saved next retry before ack? But after ack, should be 0
-	// we check that at least the acked packet is gone, allow for re-schedule of next? Actually ack removes inflight, so next schedule shouldn't happen.
-	// Give extra time then check empty
 	time.Sleep(100 * time.Millisecond)
 	list, _ = store.ListPendingRetries(context.Background())
 	found := false
@@ -281,5 +277,3 @@ func TestRetryRecoveryExpired(t *testing.T) {
 	}
 	_ = sub.Close()
 }
-
-
