@@ -60,21 +60,6 @@ mosquitto_pub -h 127.0.0.1 -p 1883 -t "test/v5" -m "v5 hi" -q 1 --property user-
 
 WebSocket: `ws://localhost:8083/mqtt`
 
-## 目录
-
-```
-cmd/broker        入口
-internal/parser   流式拆包 (Remaining Length)
-internal/codec    14 报文 + Properties 编解码
-internal/topic    Trie 通配符匹配
-internal/session  会话/Inflight/TopicAlias
-internal/persistence  Store 接口 (Memory/Redis)
-internal/cluster  Redis PubSub 路由与节点发现
-internal/transport  TCP/WS 统一 Conn
-internal/broker   核心路由与生命周期
-internal/auth     Auth/ACL 插件
-```
-
 ## 配置
 
 ```
@@ -84,14 +69,6 @@ internal/auth     Auth/ACL 插件
 - -pprof :6060            pprof 监听 (空则禁用)
 - -node  <id>            节点 ID
 ```
-
-## 已验证
-
-- `mosquitto_pub/sub` v3.1.1 互通，QoS0/1/2
-- `mqtt.js` v5 CONNECT/PUBLISH/SUBSCRIBE/UserProperty/TopicAlias
-- 双实例集群：A 节点 publish，B 节点 subscriber 收到
-- `Eclipse Paho` 官方套件 8 用例 100% 绿（`docs/compliance.md`）
-- `go vet` / `golangci 0` / `go test -race` / `Fuzz 3s` / `govulncheck` / `bench` 全绿
 
 ## 安全与扩展
 
