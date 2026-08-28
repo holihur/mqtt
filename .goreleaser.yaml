@@ -28,12 +28,12 @@ builds:
 
 archives:
   - id: broker
-    builds:
+    ids:
       - broker
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
-        format: zip
+        formats: ["zip"]
     files:
       - README.md
       - LICENSE
@@ -49,16 +49,6 @@ changelog:
       - "^test:"
       - "^chore:"
       - "Merge pull request"
-
-dockers:
-  - id: broker
-    image_templates:
-      - "ghcr.io/holihur/mqtt:{{ .Version }}"
-      - "ghcr.io/holihur/mqtt:latest"
-    dockerfile: Dockerfile
-    use: buildx
-    build_flag_templates:
-      - "--platform=linux/amd64,linux/arm64"
 
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
