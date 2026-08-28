@@ -82,9 +82,14 @@ tasks:
       - "{{.GO}} test -run=^$ -bench=. ./... -benchmem"
 
   fuzz:
-    desc: 模糊测试 (仅 CI 跑，本地 3s)
+    desc: 模糊测试 (本地快速 3s，CI 独立 job 跑 30s+)
     cmds:
       - "{{.GO}} test -run=^$ -fuzz=FuzzDecode -fuzztime=3s ./internal/codec"
+      - "{{.GO}} test -run=^$ -fuzz=FuzzProperties -fuzztime=3s ./internal/codec"
+      - "{{.GO}} test -run=^$ -fuzz=FuzzDecodePropertiesUnknownID -fuzztime=3s ./internal/codec"
+      - "{{.GO}} test -run=^$ -fuzz=FuzzDecodePublishV3PayloadCorruption -fuzztime=3s ./internal/codec"
+      - "{{.GO}} test -run=^$ -fuzz=FuzzDecodeSubackV3ReasonCodeLoss -fuzztime=3s ./internal/codec"
+      - "{{.GO}} test -run=^$ -fuzz=FuzzDecodeRoundtripProperties -fuzztime=3s ./internal/codec"
       - "{{.GO}} test -run=^$ -fuzz=FuzzSplitFrame -fuzztime=3s ./internal/parser"
 
   c10k-check:

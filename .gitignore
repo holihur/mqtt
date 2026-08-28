@@ -6,3 +6,4 @@ bin/
 tmp/
 .task/
 data/
+testdata
