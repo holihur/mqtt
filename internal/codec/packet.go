@@ -157,6 +157,7 @@ type Properties struct {
 	// Will / Publish
 	PayloadFormatIndicator *byte
 	MessageExpiryInterval  *uint32
+	WillDelayInterval      *uint32 // v5 CONNECT will only (prop 0x18), kept separate from SessionExpiryInterval (0x11)
 	TopicAlias             *uint16
 	ResponseTopic          *string
 	CorrelationData        []byte

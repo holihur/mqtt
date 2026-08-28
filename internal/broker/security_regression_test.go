@@ -175,7 +175,10 @@ func TestSecurityUserPropertyLimit(t *testing.T) {
 	}
 	pkt := &codec.Packet{Type: codec.TypePUBLISH, Version: codec.ProtocolV5, Topic: "a/b", QoS: 0, Payload: []byte("x"), PubProps: props}
 	data, _ := codec.Encode(pkt)
-	_, err := codec.Decode(data)
+	// This is a v5 packet, so enforce the limit through the version-aware path
+	// the broker actually uses (generic Decode cannot know a QoS0 PUBLISH is v5,
+	// so it must not speculate on properties to avoid corrupting v3 payloads).
+	_, err := codec.DecodeWithVersion(data, codec.ProtocolV5)
 	if err == nil {
 		t.Fatalf("user property limit should be enforced")
 	}

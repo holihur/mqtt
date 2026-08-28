@@ -1256,17 +1256,16 @@ func TestPropertiesTooManyUserProperties(t *testing.T) {
 	}
 }
 
-func TestPropertiesUnknownPropertySkipped(t *testing.T) {
-	// Unknown property ID should be skipped
+func TestPropertiesUnknownPropertyRejected(t *testing.T) {
+	// An unknown property ID must be rejected (fail closed): its value length is
+	// unknowable, so skipping it would desync the parse and silently misread or
+	// drop subsequent properties.
 	body := []byte{0xFE, 0x01, PropPayloadFormatIndicator, 1}
 	propsBytes := encodeVarInt(len(body))
 	propsBytes = append(propsBytes, body...)
-	props, _, err := decodeProperties(propsBytes, 0)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if props.PayloadFormatIndicator == nil || *props.PayloadFormatIndicator != 1 {
-		t.Fatal("expected PayloadFormatIndicator to be set")
+	_, _, err := decodeProperties(propsBytes, 0)
+	if err != ErrUnknownProperty {
+		t.Fatalf("expected ErrUnknownProperty, got: %v", err)
 	}
 }
 

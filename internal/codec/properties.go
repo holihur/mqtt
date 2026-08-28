@@ -1,6 +1,8 @@
 package codec
 
-// Properties encode/decode per MQTT5 spec. Unknown IDs are skipped.
+// Properties encode/decode per MQTT5 spec. Unknown property IDs are rejected
+// (fail closed): their value length is unknowable, so skipping them would
+// desync the parse and silently misread or drop subsequent properties.
 
 func decodeProperties(src []byte, pos int) (*Properties, int, error) {
 	if pos >= len(src) {
@@ -17,7 +19,7 @@ func decodeProperties(src []byte, pos int) (*Properties, int, error) {
 	p := &Properties{}
 	i := pos + n
 	for i < end {
-		if i >= len(src) {
+		if i >= end {
 			return nil, pos, ErrMalformedPacket
 		}
 		id := src[i]
@@ -38,21 +40,21 @@ func decodeProperties(src []byte, pos int) (*Properties, int, error) {
 			i += 4
 			p.MessageExpiryInterval = &v
 		case PropContentType:
-			s, np, err := decodeString(src, i)
+			s, np, err := decodeBoundedString(src, i, end)
 			if err != nil {
 				return nil, pos, err
 			}
 			i = np
 			p.ContentType = &s
 		case PropResponseTopic:
-			s, np, err := decodeString(src, i)
+			s, np, err := decodeBoundedString(src, i, end)
 			if err != nil {
 				return nil, pos, err
 			}
 			i = np
 			p.ResponseTopic = &s
 		case PropCorrelationData:
-			b, np, err := decodeBinary(src, i)
+			b, np, err := decodeBoundedBinary(src, i, end)
 			if err != nil {
 				return nil, pos, err
 			}
@@ -72,6 +74,13 @@ func decodeProperties(src []byte, pos int) (*Properties, int, error) {
 			v := decodeUint32(src[i:])
 			i += 4
 			p.SessionExpiryInterval = &v
+		case PropWillDelayInterval:
+			if i+4 > end {
+				return nil, pos, ErrMalformedPacket
+			}
+			v := decodeUint32(src[i:])
+			i += 4
+			p.WillDelayInterval = &v
 		case PropAssignedClientID:
 			s, np, err := decodeString(src, i)
 			if err != nil {
@@ -87,14 +96,14 @@ func decodeProperties(src []byte, pos int) (*Properties, int, error) {
 			i += 2
 			p.ServerKeepAlive = &v
 		case PropAuthMethod:
-			s, np, err := decodeString(src, i)
+			s, np, err := decodeBoundedString(src, i, end)
 			if err != nil {
 				return nil, pos, err
 			}
 			i = np
 			p.AuthMethod = &s
 		case PropAuthData:
-			b, np, err := decodeBinary(src, i)
+			b, np, err := decodeBoundedBinary(src, i, end)
 			if err != nil {
 				return nil, pos, err
 			}
@@ -107,20 +116,6 @@ func decodeProperties(src []byte, pos int) (*Properties, int, error) {
 			v := src[i]
 			i++
 			p.RequestProblemInfo = &v
-		case PropWillDelayInterval:
-			if i+4 > end {
-				return nil, pos, ErrMalformedPacket
-			}
-			v := decodeUint32(src[i:])
-			i += 4
-			// reuse SessionExpiryInterval slot? we store as generic; will uses separate field via wrapping
-			// For simplicity, store in SessionExpiryInterval temporarily and caller moves it
-			p.SessionExpiryInterval = &v // caller must interpret: if will context, it's WillDelayInterval
-			// We also keep a second copy: allocate WillDelayInterval via MessageExpiryInterval reuse check
-			// Better: add explicit field. For now we handle via SessionExpiryInterval and let will manager read it specially.
-			// To avoid confusion, we add a dedicated handling in will decode (decode Will props separately)
-			// Here we just store in SessionExpiryInterval and also set a marker: use MessageExpiryInterval as WillDelay
-			// Actual WillDelayInterval handling is done in decodeWillProperties path; here we just preserve.
 		case PropRequestResponseInfo:
 			if i >= end {
 				return nil, pos, ErrMalformedPacket
@@ -129,23 +124,20 @@ func decodeProperties(src []byte, pos int) (*Properties, int, error) {
 			i++
 			p.RequestResponseInfo = &v
 		case PropResponseInfo:
-			s, np, err := decodeString(src, i)
+			_, np, err := decodeBoundedString(src, i, end)
 			if err != nil {
 				return nil, pos, err
 			}
 			i = np
-			// store as ReasonString for simplicity (not used in core)
-			_ = s
-			_ = np
 		case PropServerReference:
-			s, np, err := decodeString(src, i)
+			s, np, err := decodeBoundedString(src, i, end)
 			if err != nil {
 				return nil, pos, err
 			}
 			i = np
 			p.ServerReference = &s
 		case PropReasonString:
-			s, np, err := decodeString(src, i)
+			s, np, err := decodeBoundedString(src, i, end)
 			if err != nil {
 				return nil, pos, err
 			}
@@ -190,14 +182,14 @@ func decodeProperties(src []byte, pos int) (*Properties, int, error) {
 			if len(p.User) >= 10 {
 				return nil, pos, ErrTooManyUserProperties
 			}
-			k, np, err := decodeString(src, i)
+			k, np, err := decodeBoundedString(src, i, end)
 			if err != nil {
 				return nil, pos, err
 			}
 			if len(k) > 256 || len(k) == 0 {
 				return nil, pos, ErrMalformedPacket
 			}
-			v, np2, err := decodeString(src, np)
+			v, np2, err := decodeBoundedString(src, np, end)
 			if err != nil {
 				return nil, pos, err
 			}
@@ -235,13 +227,38 @@ func decodeProperties(src []byte, pos int) (*Properties, int, error) {
 			i++
 			p.SharedSubAvailable = &v
 		default:
-			if i < end {
-				i++
-			}
-			continue
+			// Unknown property ID: the value length is unknowable, so skipping
+			// would desync the parse. Reject the packet instead (fail closed).
+			return nil, pos, ErrUnknownProperty
 		}
 	}
 	return p, end, nil
+}
+
+// decodeBoundedString is decodeString bounded to the current properties block
+// (end), so a declared length that runs past the block is rejected instead of
+// silently consuming the property ID of the next property.
+func decodeBoundedString(src []byte, pos, end int) (string, int, error) {
+	s, np, err := decodeString(src, pos)
+	if err != nil {
+		return "", 0, err
+	}
+	if np > end {
+		return "", 0, ErrMalformedPacket
+	}
+	return s, np, nil
+}
+
+// decodeBoundedBinary is decodeBinary bounded to the current properties block.
+func decodeBoundedBinary(src []byte, pos, end int) ([]byte, int, error) {
+	b, np, err := decodeBinary(src, pos)
+	if err != nil {
+		return nil, 0, err
+	}
+	if np > end {
+		return nil, 0, ErrMalformedPacket
+	}
+	return b, np, nil
 }
 
 func encodeProperties(p *Properties) []byte {

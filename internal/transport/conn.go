@@ -58,15 +58,19 @@ func (c *Conn) ReadPacket() (*codec.Packet, error) {
 		}
 		slog.Debug("packet recv raw", "client", c.clientID, "hex", hexStr, "len", len(frame))
 	}
-	// Use version-aware decode if we know version
-	if c.version == codec.ProtocolV5 {
+	// Use version-aware decode once the client version is known (after CONNECT).
+	// This eliminates the v3/v5 ambiguity that the generic Decode path has to
+	// guess at: a v3 SUBACK whose first reason code is 0x00, or a v3 PUBLISH
+	// whose payload happens to look like a properties block, are parsed
+	// correctly instead of being misread as v5.
+	if c.version != 0 {
 		p, err := codec.DecodeWithVersion(frame, c.version)
 		if err == nil && slog.Default().Enabled(context.Background(), slog.LevelDebug) {
 			slog.Debug("packet recv decoded", "client", c.clientID, "type", p.Type, "topic", p.Topic, "packetID", p.PacketID)
 		}
 		return p, err
 	}
-	// generic decode, but try to infer version from frame if it's CONNECT
+	// generic decode (only used for the initial CONNECT frame)
 	p, err := codec.Decode(frame)
 	if err == nil && slog.Default().Enabled(context.Background(), slog.LevelDebug) {
 		slog.Debug("packet recv decoded", "client", c.clientID, "type", p.Type, "topic", p.Topic, "packetID", p.PacketID)

@@ -111,7 +111,21 @@ func Encode(p *Packet) ([]byte, error) {
 }
 
 // Decode decodes one complete frame (including fixed header) to Packet.
+// Protocol version is inferred heuristically for version-sensitive packet
+// types; the broker's transport should use DecodeWithVersion once the client
+// version is known (after CONNECT).
 func Decode(frame []byte) (*Packet, error) {
+	return decodeVersioned(frame, 0)
+}
+
+// DecodeWithVersion is the version-aware decode used by the broker transport
+// after the client's protocol version is known. It eliminates the v3/v5
+// ambiguity that the generic Decode path has to guess at.
+func DecodeWithVersion(frame []byte, version byte) (*Packet, error) {
+	return decodeVersioned(frame, version)
+}
+
+func decodeVersioned(frame []byte, version byte) (*Packet, error) {
 	if len(frame) < 2 {
 		return nil, ErrMalformedPacket
 	}
@@ -126,7 +140,7 @@ func Decode(frame []byte) (*Packet, error) {
 		return nil, ErrMalformedPacket
 	}
 	payload := frame[1+n:]
-	p := &Packet{Type: ptype, Fixed: fixed}
+	p := &Packet{Type: ptype, Fixed: fixed, Version: version}
 	switch ptype {
 	case TypeCONNECT:
 		if err := decodeConnect(p, payload); err != nil {
@@ -327,11 +341,11 @@ func decodeConnect(p *Packet, b []byte) error {
 			if err != nil {
 				return err
 			}
-			// Extract WillDelayInterval from props (stored as SessionExpiryInterval)
-			if wprops.SessionExpiryInterval != nil {
-				w.DelayInterval = *wprops.SessionExpiryInterval
-				// clear to avoid confusion
-				wprops.SessionExpiryInterval = nil
+			// Extract WillDelayInterval (0x18) into the dedicated field;
+			// SessionExpiryInterval (0x11) is not a legal will property.
+			if wprops.WillDelayInterval != nil {
+				w.DelayInterval = *wprops.WillDelayInterval
+				wprops.WillDelayInterval = nil
 			}
 			w.Properties = wprops
 			pos = np2
@@ -441,74 +455,36 @@ func decodePublish(p *Packet, b []byte) error {
 		p.PacketID = decodeUint16(b[pos:])
 		pos += 2
 	}
-	// v5 properties detection: try to decode properties if enough bytes and version is 5
-	// We need to know version: attempt to decode properties only if the packet was flagged as v5 elsewhere
-	// Since we don't have version on PUBLISH fixed header, we heuristic: if remaining bytes start with valid properties length varint and the rest is payload, we try.
-	// For now, try to decode props if pos < len(b) and p.Version==5 or if we can peek.
-	// We'll attempt v5 props decode only if byte at pos can be varint and not break. But to keep simple, always try if pos < len(b) and (p.Version==ProtocolV5 or p.Version==0)
-	// If decode fails, treat entire remainder as payload (v3)
+	// v5 properties detection depends on the known protocol version:
+	//   - v5: properties are mandatory (may be zero-length) and precede the payload
+	//   - v3/v3.1.1: no properties; the remainder is entirely payload
+	//   - generic (version unknown): only attempt properties when there is a QoS
+	//     level > 0. A v3 QoS0 PUBLISH payload frequently starts with a byte that
+	//     decodes as a plausible properties length (e.g. 0x05), so guessing there
+	//     risks silently corrupting the payload; the version-aware path is the
+	//     correct way to decode a QoS0 v5 PUBLISH. For QoS>0 we attempt a v5
+	//     parse but fall back to treating the whole remainder as payload when it
+	//     is not a well-formed properties block (v3 shape).
 	if pos < len(b) {
 		saved := pos
-		props, np, err := decodeProperties(b, pos)
-		if err != nil {
-			if err == ErrTooManyUserProperties || err == ErrUnknownProperty {
+		if p.Version == ProtocolV5 || (p.Version == 0 && p.QoS > 0) {
+			props, np, err := decodeProperties(b, pos)
+			if err != nil {
+				if err == ErrMalformedPacket && p.Version == 0 {
+					// Not a valid v5 properties block: v3 PUBLISH, the rest is payload.
+					p.Payload = b[saved:]
+					return nil
+				}
 				return err
 			}
-			// For v3 PUBLISH with no properties, remaining bytes are payload (e.g., "hello" looks like varint 104)
-			p.PubProps = nil
-			p.Payload = b[pos:]
-			return nil
-		}
-		if np <= len(b) {
-			propsLen := np - saved - 1
-			if propsLen > 0 {
-				_ = saved
-				p.PubProps = props
-			} else {
-				p.PubProps = nil
-			}
+			p.PubProps = props
 			pos = np
-		} else {
-			p.PubProps = nil
 		}
 		p.Payload = b[pos:]
 	} else {
 		p.Payload = []byte{}
 	}
-	// Correction for v3 mis-parse: see comments above; DecodeWithVersion provides accurate path.
-	// Empty PubProps with length 0 is treated as valid v5 empty properties (payload already at b[pos:]).
 	return nil
-}
-
-// DecodeWithVersion is version-aware publish decode helper (used by broker)
-func DecodeWithVersion(frame []byte, version byte) (*Packet, error) {
-	p, err := Decode(frame)
-	if err != nil {
-		return nil, err
-	}
-	p.Version = version
-	// Re-decode publish payload correctly for v3 vs v5 if needed
-	if p.Type == TypePUBLISH {
-		// Re-parse payload section with version awareness
-		// We already have fixed parsing, but need to fix payload offset if version is v3
-		if version != ProtocolV5 {
-			// For v3, there are no properties, so payload is everything after topic+packetID
-			// Recompute offset
-			_, n, _ := decodeVarInt(frame[1:])
-			off := 1 + n
-			// topic
-			_, pos, _ := decodeString(frame[off:], 0)
-			pos += off
-			if p.QoS > 0 {
-				pos += 2
-			}
-			if pos < len(frame) {
-				p.Payload = frame[pos:]
-				p.PubProps = nil
-			}
-		}
-	}
-	return p, nil
 }
 
 // ---- ACK (PUBACK etc) ----
@@ -586,23 +562,32 @@ func decodeSubscribe(p *Packet, b []byte) error {
 		return ErrMalformedPacket
 	}
 	p.PacketID = decodeUint16(b)
-	// Try v5 path first (with properties)
-	if props, np, err := decodeProperties(b, 2); err == nil {
-		// attempt to parse subscriptions from np
-		subs, ok := tryParseSubscribePayload(b, np, true)
-		if ok {
-			p.SubProps = props
-			p.Version = ProtocolV5
-			p.Subscriptions = subs
-			if len(subs) == 0 {
-				return ErrMalformedPacket
-			}
-			return nil
+	if p.Version == ProtocolV5 {
+		props, np, err := decodeProperties(b, 2)
+		if err != nil {
+			return err
 		}
-		// if v5 parse failed, fall through to v3
+		subs, ok := tryParseSubscribePayload(b, np, true)
+		if !ok {
+			return ErrMalformedPacket
+		}
+		p.SubProps = props
+		p.Subscriptions = subs
+		return nil
 	}
-	// v3 fallback: no properties
-	subs, ok := tryParseSubscribePayload(b, 2, false)
+	// v3 (or generic): no properties. Generic keeps the existing behavior of
+	// attempting a v5 parse first and falling back to v3.
+	start := 2
+	if p.Version == 0 {
+		if props, np, err := decodeProperties(b, 2); err == nil {
+			if subs, ok := tryParseSubscribePayload(b, np, true); ok {
+				p.SubProps = props
+				p.Subscriptions = subs
+				return nil
+			}
+		}
+	}
+	subs, ok := tryParseSubscribePayload(b, start, false)
 	if !ok {
 		return ErrMalformedPacket
 	}
@@ -658,43 +643,73 @@ func decodeSuback(p *Packet, b []byte) error {
 	}
 	p.PacketID = decodeUint16(b)
 	pos := 2
-	if len(b) > pos {
-		// try props for v5: first varint is props length
+	// v5 SUBACK layout: packetID, properties length varint, properties, then
+	// one reason code per requested subscription.
+	//
+	// v3 SUBACK layout: packetID, then one reason code per subscription. A v3
+	// packet's FIRST reason code is often 0x00 (granted at QoS0), which reads
+	// as a zero-length v5 properties varint. The version-aware path resolves
+	// this exactly: v3 never has properties. The generic path only treats the
+	// leading byte as a properties length when it is clearly non-empty (>0) or
+	// when the resulting parse leaves nothing behind (a plausible v5 SUBACK
+	// with empty properties and a single 0x00 code).
+	if p.Version == ProtocolV5 {
+		props, np, err := decodeProperties(b, pos)
+		if err != nil {
+			return err
+		}
+		p.SubackProps = props
+		p.SubackCodes = b[np:]
+		return nil
+	}
+	if p.Version == 0 && len(b) > pos {
 		props, np, err := decodeProperties(b, pos)
 		if err == nil && np <= len(b) {
-			// if remaining bytes after props look like reason codes (1 byte each), treat as v5
-			// For v3, suback codes are 0x00,0x01,0x02,0x80 only, no props. So if props length >0 it's v5.
-			// Also if props length ==0 but we still have codes, could be v5 with empty props vs v3 with codes starting with 0x00.
-			// We disambiguate: if the varint value >0, it's definitely props, else ambiguous. For ambiguous, check if b[pos]==0 and len(b)-pos-1 == number of subscriptions expectation unknown -> prefer v5 if caller version is 5.
-			// For generic decode, we will assume v5 if decode succeeded and np < len(b)
-			if np < len(b) || (props != nil && (len(props.User) > 0 || props.ReasonString != nil)) {
+			// Non-empty properties block: unambiguously v5.
+			if props != nil && (len(props.User) > 0 || props.ReasonString != nil || np > pos+1) {
 				p.SubackProps = props
+				p.SubackCodes = b[np:]
 				p.Version = ProtocolV5
-				pos = np
-			} else if np == pos+1 && b[pos] == 0 {
-				// ambiguous empty props: treat as v3 if codes are only 0x00/0x01 etc but we can't tell. Keep as v3 for now, but also store props as empty for v5 compatibility
-				// Check remaining codes: if they are valid v3 codes (0,1,2,0x80), keep as v3
-				remaining := b[np:]
-				isV3 := true
-				for _, c := range remaining {
-					if c != 0x00 && c != 0x01 && c != 0x02 && c != 0x80 {
-						isV3 = false
-						break
-					}
-				}
-				if !isV3 {
-					p.SubackProps = props
-					p.Version = ProtocolV5
-					pos = np
-				} else {
-					// v3: don't consume props
-					p.SubackCodes = b[pos:]
-					return nil
+				return nil
+			}
+			// props length == 0 (np == pos+1): ambiguous between
+			//   v3 SUBACK whose first reason code is 0x00, and
+			//   v5 SUBACK with empty properties.
+			// v3 reason codes are only 0x00/0x01/0x02/0x80. If every remaining
+			// byte is a valid v3 code, treat it as v3 and do NOT consume the
+			// leading 0x00 — it is the first reason code, and dropping it would
+			// silently change the client's view of which subscriptions succeeded.
+			remaining := b[np:]
+			isV3 := true
+			for _, c := range remaining {
+				if c != 0x00 && c != 0x01 && c != 0x02 && c != 0x80 {
+					isV3 = false
+					break
 				}
 			}
+			if isV3 {
+				if len(remaining) == 0 {
+					// Single 0x00 reason code: v3.
+					p.SubackCodes = b[pos:]
+					p.Version = ProtocolV311
+					return nil
+				}
+				// All-valid-v3 codes after a would-be empty props block: the
+				// leading 0x00 is a code, not a properties length.
+				p.SubackCodes = b[pos:]
+				p.Version = ProtocolV311
+				return nil
+			}
+			// Remaining bytes include v5-only reason codes (0x87/0x97/...): v5.
+			p.SubackProps = props
+			p.SubackCodes = b[np:]
+			p.Version = ProtocolV5
+			return nil
 		}
 	}
+	// v3: all remaining bytes are reason codes.
 	p.SubackCodes = b[pos:]
+	p.Version = ProtocolV311
 	return nil
 }
 
@@ -716,15 +731,32 @@ func decodeUnsubscribe(p *Packet, b []byte) error {
 		return ErrMalformedPacket
 	}
 	p.PacketID = decodeUint16(b)
-	if props, np, err := decodeProperties(b, 2); err == nil {
-		if topics, ok := tryParseUnsubPayload(b, np); ok {
-			p.UnsubProps = props
-			p.Version = ProtocolV5
-			p.Topics = topics
-			return nil
+	if p.Version == ProtocolV5 {
+		props, np, err := decodeProperties(b, 2)
+		if err != nil {
+			return err
+		}
+		topics, ok := tryParseUnsubPayload(b, np)
+		if !ok {
+			return ErrMalformedPacket
+		}
+		p.UnsubProps = props
+		p.Topics = topics
+		return nil
+	}
+	// v3 (or generic): no properties. Generic keeps the existing behavior of
+	// attempting a v5 parse first and falling back to v3.
+	start := 2
+	if p.Version == 0 {
+		if props, np, err := decodeProperties(b, 2); err == nil {
+			if topics, ok := tryParseUnsubPayload(b, np); ok {
+				p.UnsubProps = props
+				p.Topics = topics
+				return nil
+			}
 		}
 	}
-	topics, ok := tryParseUnsubPayload(b, 2)
+	topics, ok := tryParseUnsubPayload(b, start)
 	if !ok {
 		return ErrMalformedPacket
 	}
@@ -771,6 +803,15 @@ func decodeUnsuback(p *Packet, b []byte) error {
 	}
 	p.PacketID = decodeUint16(b)
 	if len(b) > 2 {
+		if p.Version == ProtocolV5 {
+			props, np, err := decodeProperties(b, 2)
+			if err != nil {
+				return err
+			}
+			p.UnsubackProps = props
+			p.UnsubackCodes = b[np:]
+			return nil
+		}
 		props, np, err := decodeProperties(b, 2)
 		if err == nil && np <= len(b) {
 			p.UnsubackProps = props
