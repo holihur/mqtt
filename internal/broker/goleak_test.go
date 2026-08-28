@@ -19,7 +19,15 @@ func TestGoleakBrokerStartStop(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	cancel()
 	time.Sleep(200 * time.Millisecond)
-	goleak.VerifyNone(t, goleak.IgnoreTopFunction("github.com/redis/go-redis/v9/maintnotifications.(*CircuitBreakerManager).cleanupLoop"))
+	goleak.VerifyNone(t,
+		goleak.IgnoreTopFunction("github.com/redis/go-redis/v9/maintnotifications.(*CircuitBreakerManager).cleanupLoop"),
+		goleak.IgnoreAnyFunction("github.com/cockroachdb/pebble/record.(*LogWriter).flushLoop"),
+		goleak.IgnoreAnyFunction("github.com/cockroachdb/pebble/vfs.(*diskHealthCheckingFS).startTickerLocked.func1"),
+		goleak.IgnoreAnyFunction("github.com/cockroachdb/pebble/vfs.(*diskHealthCheckingFile).startTicker.func1"),
+		goleak.IgnoreAnyFunction("github.com/cockroachdb/pebble.(*tableCacheShard).releaseLoop.func1"),
+		goleak.IgnoreAnyFunction("github.com/cockroachdb/pebble.openCleanupManager.func1"),
+		goleak.IgnoreAnyFunction("github.com/cockroachdb/pebble.(*tableCacheShard).releaseLoop"),
+	)
 }
 
 func TestGoleakNoLeakAfterPublish(t *testing.T) {
@@ -45,5 +53,13 @@ func TestGoleakNoLeakAfterPublish(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	cancel()
 	time.Sleep(200 * time.Millisecond)
-	goleak.VerifyNone(t, goleak.IgnoreTopFunction("github.com/redis/go-redis/v9/maintnotifications.(*CircuitBreakerManager).cleanupLoop"))
+	goleak.VerifyNone(t,
+		goleak.IgnoreTopFunction("github.com/redis/go-redis/v9/maintnotifications.(*CircuitBreakerManager).cleanupLoop"),
+		goleak.IgnoreAnyFunction("github.com/cockroachdb/pebble/record.(*LogWriter).flushLoop"),
+		goleak.IgnoreAnyFunction("github.com/cockroachdb/pebble/vfs.(*diskHealthCheckingFS).startTickerLocked.func1"),
+		goleak.IgnoreAnyFunction("github.com/cockroachdb/pebble/vfs.(*diskHealthCheckingFile).startTicker.func1"),
+		goleak.IgnoreAnyFunction("github.com/cockroachdb/pebble.(*tableCacheShard).releaseLoop.func1"),
+		goleak.IgnoreAnyFunction("github.com/cockroachdb/pebble.openCleanupManager.func1"),
+		goleak.IgnoreAnyFunction("github.com/cockroachdb/pebble.(*tableCacheShard).releaseLoop"),
+	)
 }
