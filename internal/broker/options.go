@@ -77,6 +77,14 @@ func WithStore(s persistence.Store) Option {
 	}
 }
 
+// WithVersion 注入构建期版本信息 (version/commit/date), 管理 API /api/v1/info 展示。
+func WithVersion(version, commit, date string) Option {
+	return func(b *Broker) error {
+		b.versionInfo = brokerVersion{version: version, commit: commit, date: date}
+		return nil
+	}
+}
+
 // WithAuthenticator 注入认证器，会同步注册为 hook。
 func WithAuthenticator(a auth.Authenticator) Option {
 	return func(b *Broker) error {

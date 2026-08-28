@@ -40,13 +40,13 @@ tasks:
     desc: 编译并以 Redis 模式运行
     deps: [build]
     cmds:
-      - ./{{.BIN}} -tcp :1883 -ws :8083 -redis 127.0.0.1:6379 -pprof :6060
+      - ./{{.BIN}} -tcp :1883 -ws :8083 -redis 127.0.0.1:6379 -pprof :6060 -admin-api :6061
 
   run-memory:
     desc: 编译并以纯内存模式运行 (无 Redis)
     deps: [build]
     cmds:
-      - ./{{.BIN}} -tcp :1883 -ws :8083 -redis "" -pprof :6060
+      - ./{{.BIN}} -tcp :1883 -ws :8083 -redis "" -pprof :6060 -admin-api :6061
 
   dev:
     desc: 一键开发 — 自动拉起 redis 并启动 broker (:1883/:8083/:6060)
@@ -60,9 +60,10 @@ tasks:
         echo "   ws://localhost:8083/mqtt  (WebSocket)"
         echo "   http://localhost:6060/debug/pprof  (pprof)"
         echo "   http://localhost:6060/metrics  (prometheus)"
+        echo "   http://localhost:6061/api/v1/info  (admin api, loopback only)"
         echo "   http://localhost:9090  (prometheus, if compose up)"
         echo "   press Ctrl+C to stop"
-        ./{{.BIN}} -tcp :1883 -ws :8083 -redis 127.0.0.1:6379 -pprof :6060 -node dev -allow-anonymous true -allow-anonymous true
+        ./{{.BIN}} -tcp :1883 -ws :8083 -redis 127.0.0.1:6379 -pprof :6060 -admin-api :6061 -node dev -allow-anonymous true
 
   dev-down:
     desc: 停止 redis

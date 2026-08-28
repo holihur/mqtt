@@ -15,11 +15,11 @@ type Trie struct {
 
 type node struct {
 	children map[string]*node
-	subs     map[string]*subEntry // key: clientID#filter (unique)
+	subs     map[string]*SubEntry // key: clientID#filter (unique)
 	// for shared subs later?
 }
 
-type subEntry struct {
+type SubEntry struct {
 	ClientID string
 	Filter   string
 	QoS      byte
@@ -27,7 +27,7 @@ type subEntry struct {
 }
 
 func NewTrie() *Trie {
-	return &Trie{root: &node{children: make(map[string]*node), subs: make(map[string]*subEntry)}}
+	return &Trie{root: &node{children: make(map[string]*node), subs: make(map[string]*SubEntry)}}
 }
 
 func (t *Trie) Add(filter, clientID string, qos byte, noLocal bool) {
@@ -37,12 +37,12 @@ func (t *Trie) Add(filter, clientID string, qos byte, noLocal bool) {
 	n := t.root
 	for _, lv := range levels {
 		if n.children[lv] == nil {
-			n.children[lv] = &node{children: make(map[string]*node), subs: make(map[string]*subEntry)}
+			n.children[lv] = &node{children: make(map[string]*node), subs: make(map[string]*SubEntry)}
 		}
 		n = n.children[lv]
 	}
 	key := clientID + "#" + filter
-	n.subs[key] = &subEntry{ClientID: clientID, Filter: filter, QoS: qos, NoLocal: noLocal}
+	n.subs[key] = &SubEntry{ClientID: clientID, Filter: filter, QoS: qos, NoLocal: noLocal}
 }
 
 func (t *Trie) Remove(filter, clientID string) {
@@ -75,11 +75,11 @@ func (t *Trie) Remove(filter, clientID string) {
 }
 
 // Match returns all subscribers whose filter matches topic.
-func (t *Trie) Match(topic string) []*subEntry {
+func (t *Trie) Match(topic string) []*SubEntry {
 	levels := strings.Split(topic, "/")
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	var result []*subEntry
+	var result []*SubEntry
 	type frame struct {
 		n   *node
 		idx int
@@ -128,6 +128,44 @@ func (t *Trie) Match(topic string) []*subEntry {
 		result = filtered
 	}
 	return result
+}
+
+// Subscriptions returns all subscription entries across the trie (for management API).
+func (t *Trie) Subscriptions() []*SubEntry {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	var out []*SubEntry
+	var walk func(n *node)
+	walk = func(n *node) {
+		for _, s := range n.subs {
+			out = append(out, &SubEntry{ClientID: s.ClientID, Filter: s.Filter, QoS: s.QoS, NoLocal: s.NoLocal})
+		}
+		for _, c := range n.children {
+			walk(c)
+		}
+	}
+	walk(t.root)
+	return out
+}
+
+// SubscriptionsFor returns all subscription entries of a given client (for management API).
+func (t *Trie) SubscriptionsFor(clientID string) []*SubEntry {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	var out []*SubEntry
+	var walk func(n *node)
+	walk = func(n *node) {
+		for _, s := range n.subs {
+			if s.ClientID == clientID {
+				out = append(out, &SubEntry{ClientID: s.ClientID, Filter: s.Filter, QoS: s.QoS, NoLocal: s.NoLocal})
+			}
+		}
+		for _, c := range n.children {
+			walk(c)
+		}
+	}
+	walk(t.root)
+	return out
 }
 
 // IsValidFilter validates filter per MQTT spec.

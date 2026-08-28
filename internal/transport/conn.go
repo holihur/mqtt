@@ -102,12 +102,17 @@ func (c *Conn) Close() error {
 		return nil
 	}
 	c.closed = true
+	fn := c.onClose
 	c.mu.Unlock()
-	if c.onClose != nil {
-		c.onClose()
+	if fn != nil {
+		fn()
 	}
 	return c.raw.Close()
 }
 
-func (c *Conn) SetOnClose(fn func())          { c.onClose = fn }
+func (c *Conn) SetOnClose(fn func()) {
+	c.mu.Lock()
+	c.onClose = fn
+	c.mu.Unlock()
+}
 func (c *Conn) SetDeadline(t time.Time) error { return c.raw.SetDeadline(t) }

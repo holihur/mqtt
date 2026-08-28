@@ -154,6 +154,32 @@ func (b *Broker) initStart(ctx context.Context) (context.Context, error) {
 			_ = srv.Shutdown(shutCtx)
 		}()
 	}
+	if b.cfg.AdminAddr != "" {
+		adm := b.newAdminServer()
+		srv := &http.Server{Addr: b.cfg.AdminAddr, Handler: adm.handler()}
+		b.adminSrv = srv
+		go func() {
+			if b.cfg.AdminTLS {
+				tc := b.ensureTLS()
+				if tc == nil {
+					slog.Warn("admin tls requested but no cert/key configured, serving plaintext", "addr", b.cfg.AdminAddr)
+					_ = srv.ListenAndServe()
+					return
+				}
+				srv.TLSConfig = tc
+				_ = srv.ListenAndServeTLS("", "")
+				return
+			}
+			_ = srv.ListenAndServe()
+		}()
+		slog.Info("admin api listening", "addr", b.cfg.AdminAddr, "tokenSet", b.cfg.AdminToken != "", "tls", b.cfg.AdminTLS)
+		go func() {
+			<-runCtx.Done()
+			shutCtx, shutCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer shutCancel()
+			_ = srv.Shutdown(shutCtx)
+		}()
+	}
 	if b.cluster != nil {
 		if err := b.cluster.Start(runCtx); err != nil {
 			log.Printf("cluster start failed: %v", err)
@@ -256,6 +282,11 @@ func (b *Broker) Stop(ctx context.Context) error {
 		shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = b.metricsSrv.Shutdown(shutCtx)
+	}
+	if b.adminSrv != nil {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = b.adminSrv.Shutdown(shutCtx)
 	}
 	if b.cluster != nil {
 		b.cluster.Stop()

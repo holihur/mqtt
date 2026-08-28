@@ -66,9 +66,14 @@ WebSocket: `ws://localhost:8083/mqtt`
 - -tcp   :1883            TCP 监听
 - -ws    :8083            WS 监听 (空则禁用)
 - -redis 127.0.0.1:6379  Redis 地址 (逗号分隔多地址即集群, 空则纯内存)
-- -pprof :6060            pprof 监听 (空则禁用)
+- -pprof :6060            pprof 监听 (空则禁用, 同时提供 /metrics /healthz /readyz)
+- -admin-api :6061        管理 API 监听 (空则禁用, 见 docs/admin.md)
+- -admin-api-token <t>    管理 API Bearer token (空则仅允许 loopback)
+- -admin-api-tls          管理 API 走 TLS (复用 -tls-cert/-tls-key)
 - -node  <id>            节点 ID
 ```
+
+管理 API 提供客户端/会话/订阅/retain 查看与操作、消息发布、ACL 热加载，详见 [`docs/admin.md`](docs/admin.md)。
 
 ## 消息持久化 (SQL 历史消息)
 

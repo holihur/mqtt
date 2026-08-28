@@ -260,3 +260,36 @@ func TestMatchFilter(t *testing.T) {
 		}
 	}
 }
+
+func TestTrieSubscriptionsListing(t *testing.T) {
+	tr := NewTrie()
+	tr.Add("a/b", "c1", 1, false)
+	tr.Add("a/+", "c1", 0, true)
+	tr.Add("x/#", "c2", 2, false)
+	tr.Add("a/b", "c2", 1, false)
+
+	all := tr.Subscriptions()
+	if len(all) != 4 {
+		t.Fatalf("Subscriptions: want 4, got %d", len(all))
+	}
+	byC1 := tr.SubscriptionsFor("c1")
+	if len(byC1) != 2 {
+		t.Fatalf("SubscriptionsFor(c1): want 2, got %d", len(byC1))
+	}
+	byC2 := tr.SubscriptionsFor("c2")
+	if len(byC2) != 2 {
+		t.Fatalf("SubscriptionsFor(c2): want 2, got %d", len(byC2))
+	}
+	if tr.SubscriptionsFor("nobody") != nil && len(tr.SubscriptionsFor("nobody")) != 0 {
+		t.Fatalf("SubscriptionsFor(nobody): want empty")
+	}
+
+	// 删除后列表应同步
+	tr.Remove("a/b", "c1")
+	if len(tr.Subscriptions()) != 3 {
+		t.Fatalf("after remove: want 3, got %d", len(tr.Subscriptions()))
+	}
+	if len(tr.SubscriptionsFor("c1")) != 1 {
+		t.Fatalf("after remove c1: want 1, got %d", len(tr.SubscriptionsFor("c1")))
+	}
+}

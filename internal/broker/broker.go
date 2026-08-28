@@ -43,6 +43,9 @@ type Config struct {
 	WSAddr                    string
 	RedisAddr                 string
 	PprofAddr                 string
+	AdminAddr                 string // 管理 API 监听地址, 空则禁用
+	AdminToken                string // 管理 API Bearer token, 空则仅允许 loopback
+	AdminTLS                  bool   // 管理 API 是否走 TLS (复用 -tls-cert/-tls-key)
 	ACLFile                   string
 	JWTSecret                 string
 	MaxPacketSize             int
@@ -107,12 +110,23 @@ type Broker struct {
 
 	hooks *hook.Manager
 
+	// 管理 API 版本信息 (由 WithVersion 注入, 独立运行时来自 cmd/broker ldflags)
+	versionInfo brokerVersion
+
 	// lifecycle: 支持独立与嵌入式双模式
 	customListener net.Listener
 	runMu          sync.Mutex
 	running        bool
 	cancel         context.CancelFunc
 	metricsSrv     *http.Server
+	adminSrv       *http.Server
+}
+
+// brokerVersion 承载构建期版本信息, 用于管理 API /api/v1/info。
+type brokerVersion struct {
+	version string
+	commit  string
+	date    string
 }
 
 func NewWithOptions(cfg Config, opts ...Option) (*Broker, error) {
@@ -239,6 +253,14 @@ func (b *Broker) onClientDisconnect(clientID string, sess *session.Session, clea
 		slog.Info("client disconnect", "client", clientID, "clean", clean)
 		return
 	}
+	// 管理 API 显式删除会话后, 不再把会话写回 store / 触发 will。
+	sess.Mu.Lock()
+	deleted := sess.Deleted
+	sess.Mu.Unlock()
+	if deleted {
+		slog.Info("client disconnect (session deleted via admin api)", "client", clientID)
+		return
+	}
 	sess.Mu.Lock()
 	nodeID := sess.NodeID
 	sess.Mu.Unlock()
@@ -261,6 +283,11 @@ func (b *Broker) onClientDisconnect(clientID string, sess *session.Session, clea
 			sess.Will = nil
 			sess.Mu.Unlock()
 		}
+		// clean 会话断开即废弃: 从 store 与内存会话表一并移除,
+		// 避免残留条目被 /sessions 列出、或让后续持久重连误判 SessionPresent。
+		b.mu.Lock()
+		delete(b.sessions, clientID)
+		b.mu.Unlock()
 		if err := b.store.DeleteSession(bgCtx(), clientID); err != nil {
 			slog.Warn("store DeleteSession failed", "err", err)
 		}

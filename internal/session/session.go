@@ -33,6 +33,9 @@ type Session struct {
 	// Topic Alias maps (v5)
 	AliasToTopic map[uint16]string
 	TopicToAlias map[string]uint16
+
+	// Deleted 标记会话已被管理 API 显式删除：断开回调检测到后不再把会话写回 store。
+	Deleted bool
 }
 
 type Will struct {

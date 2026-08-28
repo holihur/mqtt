@@ -53,6 +53,9 @@ func main() {
 		wsAddr                = flag.String("ws", ":8083", "WebSocket listen addr (empty to disable)")
 		redisAddr             = flag.String("redis", "127.0.0.1:6379", "Redis addr (comma-separated for cluster, empty to disable)")
 		pprofAddr             = flag.String("pprof", "", "pprof listen addr (empty to disable, e.g. :6060)")
+		adminAPIAddr          = flag.String("admin-api", "", "management API listen addr (empty to disable, e.g. :6061)")
+		adminAPIToken         = flag.String("admin-api-token", "", "management API bearer token (empty: loopback only)")
+		adminAPITLS           = flag.Bool("admin-api-tls", false, "serve management API over TLS (uses -tls-cert/-tls-key)")
 		aclFile               = flag.String("acl", "", "ACL file path (empty to disable)")
 		jwtSecret             = flag.String("jwt-secret", "", "JWT HMAC secret (empty to disable)")
 		allowAnonymous        = flag.String("allow-anonymous", "false", "allow anonymous (true/false)")
@@ -85,7 +88,7 @@ func main() {
 		os.Exit(0)
 	}
 	logger.Init(*logLevel)
-	slog.Info("starting", "mode", "standalone", "version", version, "commit", commit, "date", date, "log_level", *logLevel)
+	slog.Info("starting", "mode", "standalone", "version", version, "commit", commit, "date", date, "log_level", *logLevel, "admin_api", *adminAPIAddr, "admin_token_set", *adminAPIToken != "")
 
 	var store persistence.Store
 	var walStore persistence.Store
@@ -195,6 +198,9 @@ func main() {
 		WSAddr:                *wsAddr,
 		RedisAddr:             *redisAddr,
 		PprofAddr:             *pprofAddr,
+		AdminAddr:             *adminAPIAddr,
+		AdminToken:            *adminAPIToken,
+		AdminTLS:              *adminAPITLS,
 		ACLFile:               *aclFile,
 		JWTSecret:             *jwtSecret,
 		AllowAnonymous:        allowAnon,
@@ -208,7 +214,7 @@ func main() {
 		WalDir:                walDirCfg,
 		WsAllowOrigins:        wsOrigins,
 	}
-	opts := []broker.Option{broker.WithStore(store)}
+	opts := []broker.Option{broker.WithStore(store), broker.WithVersion(version, commit, date)}
 	if msgPersistHook != nil {
 		opts = append(opts, broker.WithHook(msgPersistHook))
 	}
