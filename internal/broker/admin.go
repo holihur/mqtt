@@ -63,6 +63,7 @@ type infoResponse struct {
 	Redis    string `json:"redisAddr"`
 	Admin    bool   `json:"adminEnabled"`
 	AdminTLS bool   `json:"adminTls"`
+	WSAddr   string `json:"wsAddr,omitempty"`
 }
 
 type statsResponse struct {
@@ -257,6 +258,7 @@ func (s *adminServer) handleInfo(w http.ResponseWriter, r *http.Request) {
 		Redis:    b.cfg.RedisAddr,
 		Admin:    b.cfg.AdminAddr != "",
 		AdminTLS: b.cfg.AdminTLS,
+		WSAddr:   b.cfg.WSAddr,
 	})
 }
 

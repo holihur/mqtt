@@ -1,9 +1,12 @@
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Archive,
   HardDrive,
   LayoutDashboard,
   ListTree,
+  PanelLeftClose,
+  PanelLeftOpen,
   Radio,
   Send,
   Settings,
@@ -11,6 +14,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 
+import { getSidebarCollapsed, setSidebarCollapsed } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -45,35 +49,79 @@ interface LayoutProps {
 
 export function Layout({ current, onNavigate, headerRight, children }: LayoutProps) {
   const { t } = useTranslation()
+  const [collapsed, setCollapsed] = useState(() => getSidebarCollapsed())
+
+  const toggleCollapsed = () => {
+    const next = !collapsed
+    setCollapsed(next)
+    setSidebarCollapsed(next)
+  }
 
   return (
     <div className="flex min-h-svh">
-      <aside className="bg-sidebar text-sidebar-foreground sticky top-0 hidden h-svh w-60 shrink-0 flex-col border-r md:flex">
-        <div className="flex h-14 items-center gap-2 border-b px-5">
-          <div className="bg-primary text-primary-foreground flex size-7 items-center justify-center rounded-md text-xs font-bold">
-            MQ
-          </div>
-          <div className="leading-tight">
-            <div className="text-sm font-semibold">{t('app.title')}</div>
-            <div className="text-muted-foreground text-xs">{t('app.subtitle')}</div>
-          </div>
+      <aside
+        className={cn(
+          'bg-sidebar text-sidebar-foreground sticky top-0 hidden h-svh shrink-0 flex-col border-r transition-[width] duration-200 md:flex',
+          collapsed ? 'w-16' : 'w-60',
+        )}
+      >
+        <div
+          className={cn(
+            'flex h-14 items-center border-b',
+            collapsed ? 'justify-center px-2' : 'gap-2 px-4',
+          )}
+        >
+          {collapsed ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-8"
+              onClick={toggleCollapsed}
+              title={t('nav.expand')}
+            >
+              <PanelLeftOpen className="size-4" />
+            </Button>
+          ) : (
+            <>
+              <div className="bg-primary text-primary-foreground flex size-7 shrink-0 items-center justify-center rounded-md text-xs font-bold">
+                MQ
+              </div>
+              <div className="min-w-0 leading-tight">
+                <div className="truncate text-sm font-semibold">{t('app.title')}</div>
+                <div className="text-muted-foreground truncate text-xs">{t('app.subtitle')}</div>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="ml-auto size-8"
+                onClick={toggleCollapsed}
+                title={t('nav.collapse')}
+              >
+                <PanelLeftClose className="size-4" />
+              </Button>
+            </>
+          )}
         </div>
-        <nav className="flex flex-1 flex-col gap-1 p-3">
+        <nav className={cn('flex flex-1 flex-col gap-1', collapsed ? 'items-center p-2' : 'p-3')}>
           {NAV.map(({ key, icon: Icon, labelKey }) => (
             <button
               key={key}
               onClick={() => onNavigate(key)}
+              title={collapsed ? t(labelKey) : undefined}
               className={cn(
-                'hover:bg-sidebar-accent hover:text-sidebar-accent-foreground flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                'hover:bg-sidebar-accent hover:text-sidebar-accent-foreground flex items-center gap-3 rounded-md text-sm font-medium transition-colors',
+                collapsed ? 'size-10 justify-center p-0' : 'px-3 py-2',
                 current === key && 'bg-sidebar-accent text-sidebar-accent-foreground',
               )}
             >
-              <Icon className="size-4" />
-              {t(labelKey)}
+              <Icon className="size-4 shrink-0" />
+              {!collapsed && t(labelKey)}
             </button>
           ))}
         </nav>
-        <div className="text-muted-foreground border-t p-4 text-xs">admin API v1</div>
+        {!collapsed && (
+          <div className="text-muted-foreground border-t p-4 text-xs">admin API v1</div>
+        )}
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">

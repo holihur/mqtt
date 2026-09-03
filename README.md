@@ -111,16 +111,20 @@ Dashboard 的 **Live** 页通过 [MQTT.js](https://github.com/mqttjs/MQTT.js) �
 ./bin/broker -ws :8083 -webui :8080 -allow-anonymous true
 ```
 
-由于 dashboard 与 WS 监听在不同端口（跨源），需用 `-ws-allow-origins` 放行 dashboard 的 Origin：
+Dashboard 会自动从 `/api/v1/info` 读取 broker 配置的 WS 监听地址并拼接连接 URL，
+所以修改 `-ws` 地址后无需在 Settings 里手动改。同 hostname 下即使 dashboard 与 WS 端口不同
+（如 `-webui :8080 -ws :8083`）也能握手成功；仅当 dashboard 与 WS 部署在**不同主机名**时，
+才需用 `-ws-allow-origins` 放行 dashboard 的 Origin：
 
 ```bash
 ./bin/broker -ws :8083 -webui :8080 -allow-anonymous true \
-  -ws-allow-origins 'http://localhost:8080,http://192.168.1.10:8080'
+  -ws-allow-origins 'https://console.example.com'
 # 内网简单场景可用 * 放行全部 Origin
 ./bin/broker -ws :8083 -webui :8080 -allow-anonymous true -ws-allow-origins '*'
 ```
 
-> WS 连接地址默认 `ws://<host>:8083/mqtt`，可在 Settings 中修改；用户名/密码在 Live 页填写并保存在 localStorage。
+> WS 连接地址优先级：Settings 手动配置 > 从 `/api/v1/info` 自动发现 > 默认 `ws://<host>:8083/mqtt`。
+> 用户名/密码在 Live 页填写并保存在 localStorage。
 
 ## 消息持久化 (SQL 历史消息)
 
