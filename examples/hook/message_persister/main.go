@@ -11,7 +11,7 @@ import (
 	"mqtt/internal/hook"
 	"mqtt/internal/persistence"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 // Message persistence demo (issue #5): every PUBLISH is written to SQL in
@@ -43,7 +43,7 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
 	// In-memory SQLite for demo; replace with a real DSN in production.
-	db, err := sql.Open("sqlite3", ":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		slog.Error("open db failed", "err", err)
 		os.Exit(1)

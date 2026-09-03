@@ -18,8 +18,8 @@ import (
 	"mqtt/internal/persistence"
 
 	_ "github.com/lib/pq"
-	_ "github.com/mattn/go-sqlite3"
 	"github.com/redis/go-redis/v9"
+	_ "modernc.org/sqlite"
 )
 
 var (
@@ -141,7 +141,7 @@ func main() {
 	var msgPersistHook *hook.MessagePersisterHook
 	var msgPersistDB *sql.DB
 	if *msgPersistDSN != "" {
-		driver, dsn := "sqlite3", *msgPersistDSN
+		driver, dsn := "sqlite", *msgPersistDSN
 		if strings.HasPrefix(*msgPersistDSN, "postgres://") || strings.HasPrefix(*msgPersistDSN, "postgresql://") {
 			driver, dsn = "postgres", *msgPersistDSN
 		}

@@ -15,10 +15,10 @@
 import (
     "database/sql"
     "mqtt/internal/hook"
-    _ "github.com/mattn/go-sqlite3" // 或 pq / go-sql-driver/mysql
+    _ "modernc.org/sqlite" // 或 pq / go-sql-driver/mysql
 )
 
-db, _ := sql.Open("sqlite3", "./mqtt.db")
+db, _ := sql.Open("sqlite", "./mqtt.db")
 h, _ := hook.NewDBAuthHook(db, hook.DBAuthConfig{
     UsersQuery: "SELECT password_hash, status FROM users WHERE username = ?",
     ACLQuery:   "SELECT topic_pattern FROM acl WHERE username = ?",

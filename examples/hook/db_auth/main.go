@@ -10,8 +10,8 @@ import (
 	"mqtt/internal/hook"
 	"mqtt/internal/persistence"
 
-	_ "github.com/mattn/go-sqlite3"
 	"golang.org/x/crypto/bcrypt"
+	_ "modernc.org/sqlite"
 )
 
 func mustHash(pw string) string {
@@ -25,7 +25,7 @@ func main() {
 	// In-memory SQLite for demo; replace with postgres/mysql DSN in production:
 	//  postgres:  sql.Open("postgres", "postgres://user:pass@localhost/mqtt?sslmode=disable")
 	//  mysql:     sql.Open("mysql", "user:pass@tcp(localhost:3306)/mqtt")
-	db, err := sql.Open("sqlite3", ":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		slog.Error("open db failed", "err", err)
 		os.Exit(1)
