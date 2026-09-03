@@ -5,7 +5,7 @@ before:
   hooks:
     - go mod tidy
     - go vet ./...
-    - sh scripts/build-webui.sh
+    - task webui
 
 builds:
   - id: broker
