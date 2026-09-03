@@ -14,12 +14,12 @@ import (
 // 静态 dashboard 公开可访问、SPA 回退、/api/ 仍遵循 Bearer 鉴权。
 func TestWebUICombinedHandler(t *testing.T) {
 	b, err := NewWithOptions(Config{
-		NodeID:          "webui-test",
-		TCPAddr:         "",
-		WSAddr:          "",
-		AllowAnonymous:  true,
-		MaxPacketSize:   1 << 20,
-		AdminToken:      "s3cret",
+		NodeID:         "webui-test",
+		TCPAddr:        "",
+		WSAddr:         "",
+		AllowAnonymous: true,
+		MaxPacketSize:  1 << 20,
+		AdminToken:     "s3cret",
 	}, WithStore(persistence.NewMemoryStore()), WithVersion("1.2.3", "abc123", "2026-08-28"))
 	if err != nil {
 		t.Fatalf("NewWithOptions: %v", err)
