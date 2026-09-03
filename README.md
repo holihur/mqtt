@@ -187,18 +187,18 @@ defer h.Close()
 
 ## 基准与压测（CI 自动更新）
 <!-- BENCH_START -->
-> 更新: 2026-09-03 01:57 UTC | goos: linux goarch: amd64 | cpu: AMD EPYC 9V74 80-Core Processor                
+> 更新: 2026-09-03 03:10 UTC | goos: linux goarch: amd64 | cpu: Intel(R) Xeon(R) 6973P-C
 >
 > ```
 > goos: linux
 goarch: amd64
-cpu: AMD EPYC 9V74 80-Core Processor                
-Benchmark10kClients-4          	2026/09/03 01:57:45 INFO client disconnect client="bench-\x00" clean=false node=bench
-BenchmarkPublishThroughput-4   	2026/09/03 01:57:45 INFO client connected client=pub-bench addr=127.0.0.1:55008 sessionPresent=false version=4 clean=true
+cpu: Intel(R) Xeon(R) 6973P-C
+Benchmark10kClients-4          	       1	    720151 ns/op	   19880 B/op	     103 allocs/op
+BenchmarkPublishThroughput-4   	2026/09/03 03:10:25 INFO client connected client=pub-bench addr=127.0.0.1:36334 sessionPresent=false version=4 clean=true
 > ```
 >
-> - Benchmark10kClients-4 2026/09/03 01:57:45 INFO client disconnect client=bench-\x00 clean=false node=bench
-> - BenchmarkPublishThroughput-4 2026/09/03 01:57:45 INFO client connected client=pub-bench addr=127.0.0.1:55008 sessionPresent=false version=4 clean=true
+> - Benchmark10kClients-4 1 720151 ns/op 19880 B/op 103 allocs/op
+> - BenchmarkPublishThroughput-4 2026/09/03 03:10:25 INFO client connected client=pub-bench addr=127.0.0.1:36334 sessionPresent=false version=4 clean=true
 > - 详见 [`docs/bench.md`](docs/bench.md) 与 Artifacts `bench.txt`/`c10k.txt`
 
 <!-- BENCH_END -->
