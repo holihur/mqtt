@@ -11,3 +11,5 @@ testdata
 # embedded dashboard build output (keep the placeholder index.html)
 internal/webui/dist/*
 !internal/webui/dist/index.html
+# rust build output
+target/

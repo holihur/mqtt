@@ -1,0 +1,44 @@
+[package]
+name = "mqtt-broker"
+version = "0.1.0"
+edition = "2021"
+description = "MQTT 3.1/3.1.1/5.0 broker (Rust port of the Go broker, admin API behavior compatible)"
+license = "MIT"
+
+[[bin]]
+name = "broker"
+path = "src/bin/broker.rs"
+
+[lib]
+name = "mqtt_broker"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros", "signal", "fs"] }
+tokio-tungstenite = "0.21"
+futures-util = "0.3"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "tls12", "logging"] }
+rustls-pemfile = "2"
+redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+hmac = "0.12"
+sha2 = "0.10"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+async-trait = "0.1"
+httparse = "1"
+socket2 = "0.5"
+rust-embed = { version = "8", features = ["debug-embed"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 2
+lto = false
