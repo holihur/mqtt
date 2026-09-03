@@ -25,6 +25,21 @@ Broker 提供面向运维的 HTTP REST 接口 (JSON)，用于查看与控制运�
 | `-admin-api` | 空 (禁用) | 管理 API 监听地址，如 `:6061` |
 | `-admin-api-token` | 空 | Bearer token；未设置时仅允许 loopback |
 | `-admin-api-tls` | false | 使用 `-tls-cert/-tls-key` 证书走 TLS |
+| `-webui` | 空 (禁用) | 内嵌 dashboard 监听地址，如 `:8080`（同端口挂载 `/api/v1`） |
+
+## Web Dashboard (内嵌)
+
+Dashboard 前端已嵌入二进制，通过 `-webui` 独立指定监听 IP/端口：
+
+```bash
+# dashboard + API 同源，开箱即用
+./bin/broker ... -webui 0.0.0.0:8080 -admin-api-token 'change-me'
+```
+
+- `/` 及静态资源：服务嵌入的 React SPA（公开访问）。
+- `/api/v1/*`：复用管理 API，鉴权规则与 `-admin-api` 完全一致（Bearer token，未配置时仅 loopback）。
+- 浏览器打开 `http://<ip>:8080`，在 Settings 页填写 Admin Token 后即可操作。
+- 未构建前端时嵌入占位页，先执行 `task webui` 再 `task build`。
 
 ## 鉴权
 

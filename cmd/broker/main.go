@@ -56,6 +56,7 @@ func main() {
 		adminAPIAddr          = flag.String("admin-api", "", "management API listen addr (empty to disable, e.g. :6061)")
 		adminAPIToken         = flag.String("admin-api-token", "", "management API bearer token (empty: loopback only)")
 		adminAPITLS           = flag.Bool("admin-api-tls", false, "serve management API over TLS (uses -tls-cert/-tls-key)")
+		webuiAddr             = flag.String("webui", "", "web dashboard listen addr (empty to disable, e.g. :8080); serves embedded UI + /api/v1")
 		aclFile               = flag.String("acl", "", "ACL file path (empty to disable)")
 		jwtSecret             = flag.String("jwt-secret", "", "JWT HMAC secret (empty to disable)")
 		allowAnonymous        = flag.String("allow-anonymous", "false", "allow anonymous (true/false)")
@@ -88,7 +89,7 @@ func main() {
 		os.Exit(0)
 	}
 	logger.Init(*logLevel)
-	slog.Info("starting", "mode", "standalone", "version", version, "commit", commit, "date", date, "log_level", *logLevel, "admin_api", *adminAPIAddr, "admin_token_set", *adminAPIToken != "")
+	slog.Info("starting", "mode", "standalone", "version", version, "commit", commit, "date", date, "log_level", *logLevel, "admin_api", *adminAPIAddr, "webui", *webuiAddr, "admin_token_set", *adminAPIToken != "")
 
 	var store persistence.Store
 	var walStore persistence.Store
@@ -201,6 +202,7 @@ func main() {
 		AdminAddr:             *adminAPIAddr,
 		AdminToken:            *adminAPIToken,
 		AdminTLS:              *adminAPITLS,
+		WebUIAddr:             *webuiAddr,
 		ACLFile:               *aclFile,
 		JWTSecret:             *jwtSecret,
 		AllowAnonymous:        allowAnon,

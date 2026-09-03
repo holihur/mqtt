@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -123,13 +124,17 @@ func TestWithRedisAddrOption(t *testing.T) {
 }
 
 func TestWithConfigOption(t *testing.T) {
+	aclPath := filepath.Join(t.TempDir(), "acl")
+	if err := os.WriteFile(aclPath, []byte("user u topic t read\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	cfg := Config{
 		NodeID:             "cfg-node",
 		TCPAddr:            ":9999",
 		WSAddr:             ":9998",
 		RedisAddr:          "127.0.0.1:6379",
 		PprofAddr:          ":6060",
-		ACLFile:            "/tmp/acl",
+		ACLFile:            aclPath,
 		JWTSecret:          "secret",
 		TLSCertFile:        "/tmp/cert",
 		TLSKeyFile:         "/tmp/key",
@@ -158,7 +163,7 @@ func TestWithConfigOption(t *testing.T) {
 	if b.cfg.PprofAddr != ":6060" {
 		t.Fatalf("WithConfig PprofAddr: %s", b.cfg.PprofAddr)
 	}
-	if b.cfg.ACLFile != "/tmp/acl" {
+	if b.cfg.ACLFile != aclPath {
 		t.Fatalf("WithConfig ACLFile: %s", b.cfg.ACLFile)
 	}
 	if b.cfg.JWTSecret != "secret" {

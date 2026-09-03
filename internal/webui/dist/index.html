@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MQTT Broker Dashboard</title>
+    <style>
+      body {
+        font-family: system-ui, -apple-system, sans-serif;
+        max-width: 36rem;
+        margin: 5rem auto;
+        padding: 0 1rem;
+        line-height: 1.6;
+        color: #1f2937;
+        background: #f9fafb;
+      }
+      code {
+        background: #e5e7eb;
+        padding: 0.15rem 0.4rem;
+        border-radius: 0.25rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>MQTT Broker Dashboard</h1>
+    <p>
+      当前二进制未嵌入前端构建产物。请先构建 dashboard：
+    </p>
+    <pre><code>task webui &amp;&amp; task build</code></pre>
+    <p>
+      或手动执行：
+    </p>
+    <pre><code>cd web/dashboard &amp;&amp; npm ci &amp;&amp; npm run build</code></pre>
+  </body>
+</html>

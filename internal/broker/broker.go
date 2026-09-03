@@ -46,6 +46,7 @@ type Config struct {
 	AdminAddr                 string // 管理 API 监听地址, 空则禁用
 	AdminToken                string // 管理 API Bearer token, 空则仅允许 loopback
 	AdminTLS                  bool   // 管理 API 是否走 TLS (复用 -tls-cert/-tls-key)
+	WebUIAddr                 string // dashboard 监听地址 (嵌入前端 + /api/v1), 空则禁用
 	ACLFile                   string
 	JWTSecret                 string
 	MaxPacketSize             int
@@ -120,6 +121,7 @@ type Broker struct {
 	cancel         context.CancelFunc
 	metricsSrv     *http.Server
 	adminSrv       *http.Server
+	webuiSrv       *http.Server
 }
 
 // brokerVersion 承载构建期版本信息, 用于管理 API /api/v1/info。

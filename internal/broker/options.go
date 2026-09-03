@@ -224,6 +224,9 @@ func WithConfig(cfg Config) Option {
 		if cfg.PprofAddr != "" {
 			b.cfg.PprofAddr = cfg.PprofAddr
 		}
+		if cfg.WebUIAddr != "" {
+			b.cfg.WebUIAddr = cfg.WebUIAddr
+		}
 		if cfg.ACLFile != "" {
 			b.cfg.ACLFile = cfg.ACLFile
 		}

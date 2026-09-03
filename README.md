@@ -70,10 +70,26 @@ WebSocket: `ws://localhost:8083/mqtt`
 - -admin-api :6061        管理 API 监听 (空则禁用, 见 docs/admin.md)
 - -admin-api-token <t>    管理 API Bearer token (空则仅允许 loopback)
 - -admin-api-tls          管理 API 走 TLS (复用 -tls-cert/-tls-key)
+- -webui :8080            内嵌 dashboard 监听地址 (空则禁用, 同端口提供 /api/v1)
 - -node  <id>            节点 ID
 ```
 
 管理 API 提供客户端/会话/订阅/retain 查看与操作、消息发布、ACL 热加载，详见 [`docs/admin.md`](docs/admin.md)。
+
+## Web Dashboard (内嵌)
+
+React + Vite 构建的管理控制台已通过 `go:embed` 嵌入 broker 二进制，最终 release 为单个可执行文件。
+
+```bash
+# 启动内嵌 dashboard (:8080), 同端口自动提供 /api/v1
+./bin/broker -webui :8080 -admin-api-token 'change-me'
+
+# 浏览器访问 http://localhost:8080 , 在 Settings 中填入 Admin Token 即可
+```
+
+- 前端源码在 [`web/dashboard`](web/dashboard)，构建脚本 `task webui` 会将其产物嵌入 `internal/webui/dist`。
+- `-webui` 与 `-admin-api` 独立：前者面向人（UI + API 同源），后者面向脚本（纯 API）。
+- 开发模式：`cd web/dashboard && npm run dev`（Vite 已代理 `/api` → `127.0.0.1:6061`）。
 
 ## 消息持久化 (SQL 历史消息)
 

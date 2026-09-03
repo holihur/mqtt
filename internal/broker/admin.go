@@ -42,6 +42,7 @@ import (
 	"mqtt/internal/codec"
 	"mqtt/internal/session"
 	"mqtt/internal/transport"
+	"mqtt/internal/webui"
 )
 
 // ---------------------------------------------------------------------------
@@ -152,6 +153,21 @@ func (b *Broker) newAdminServer() *adminServer {
 // handler 返回带鉴权中间件的完整路由。
 func (s *adminServer) handler() http.Handler {
 	return s.authMiddleware(s.mux())
+}
+
+// combinedHandler 在 /api/ 下挂载鉴权后的管理 API，其余路径服务嵌入的
+// dashboard 静态资源（静态资源公开，API 仍遵循 Bearer/loopback 鉴权）。
+// 供 -webui 监听端口使用，使 dashboard 与 API 同源、开箱即用。
+func (s *adminServer) combinedHandler() http.Handler {
+	api := s.handler()
+	web := webui.Handler()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			api.ServeHTTP(w, r)
+			return
+		}
+		web.ServeHTTP(w, r)
+	})
 }
 
 func (s *adminServer) mux() *http.ServeMux {
