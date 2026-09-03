@@ -191,18 +191,18 @@ defer h.Close()
 
 ## 基准与压测（CI 自动更新）
 <!-- BENCH_START -->
-> 更新: 2026-09-03 03:10 UTC | goos: linux goarch: amd64 | cpu: Intel(R) Xeon(R) 6973P-C
+> 更新: 2026-09-03 04:35 UTC | goos: linux goarch: amd64 | cpu: AMD EPYC 7763 64-Core Processor                
 >
 > ```
 > goos: linux
 goarch: amd64
-cpu: Intel(R) Xeon(R) 6973P-C
-Benchmark10kClients-4          	       1	    720151 ns/op	   19880 B/op	     103 allocs/op
-BenchmarkPublishThroughput-4   	2026/09/03 03:10:25 INFO client connected client=pub-bench addr=127.0.0.1:36334 sessionPresent=false version=4 clean=true
+cpu: AMD EPYC 7763 64-Core Processor                
+Benchmark10kClients-4          	       1	    578985 ns/op	   18168 B/op	      76 allocs/op
+BenchmarkPublishThroughput-4   	       1	     47529 ns/op	      64 B/op	       3 allocs/op
 > ```
 >
-> - Benchmark10kClients-4 1 720151 ns/op 19880 B/op 103 allocs/op
-> - BenchmarkPublishThroughput-4 2026/09/03 03:10:25 INFO client connected client=pub-bench addr=127.0.0.1:36334 sessionPresent=false version=4 clean=true
+> - Benchmark10kClients-4 1 578985 ns/op 18168 B/op 76 allocs/op
+> - BenchmarkPublishThroughput-4 1 47529 ns/op 64 B/op 3 allocs/op
 > - 详见 [`docs/bench.md`](docs/bench.md) 与 Artifacts `bench.txt`/`c10k.txt`
 
 <!-- BENCH_END -->
