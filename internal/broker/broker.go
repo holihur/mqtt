@@ -111,6 +111,11 @@ type Broker struct {
 	retryMu    sync.Mutex
 	retryQueue map[string]map[uint16]*retryEntry // clientID -> packetID -> entry
 
+	// 延迟遗嘱 (DelayInterval>0) 的取消句柄: clientID -> timer。
+	// 同一 client 重连 (会话恢复/重建) 时按 MQTT5 需丢弃未投递的延迟遗嘱。
+	willMu     sync.Mutex
+	willTimers map[string]*time.Timer
+
 	remoteMu    sync.RWMutex
 	remoteTries map[string]topic.Trie // nodeID -> trie of remote subs
 
@@ -151,6 +156,7 @@ func NewWithOptions(cfg Config, opts ...Option) (*Broker, error) {
 		sessions:    make(map[string]*session.Session),
 		limiters:    make(map[string]*clientLimiter),
 		retryQueue:  make(map[string]map[uint16]*retryEntry),
+		willTimers:  make(map[string]*time.Timer),
 		remoteTries: make(map[string]topic.Trie),
 		hooks:       hook.NewManager(),
 	}
@@ -235,6 +241,8 @@ func New(cfg Config, store persistence.Store, authenticator auth.Authenticator) 
 			conns:       make(map[string]*transport.Conn),
 			sessions:    make(map[string]*session.Session),
 			limiters:    make(map[string]*clientLimiter),
+			retryQueue:  make(map[string]map[uint16]*retryEntry),
+			willTimers:  make(map[string]*time.Timer),
 			remoteTries: make(map[string]topic.Trie),
 			hooks:       hook.NewManager(),
 		}
@@ -310,6 +318,8 @@ func (b *Broker) onClientDisconnect(clientID string, sess *session.Session, clea
 	}
 	sess.Mu.Lock()
 	sess.Connected = false
+	// 记录离线时刻: 供持久会话 (有限 ExpiryInterval) 的过期清理使用
+	sess.OfflineSince = time.Now()
 	sess.Mu.Unlock()
 	if err := b.store.SaveSession(bgCtx(), sess); err != nil {
 		slog.Warn("store SaveSession failed", "err", err)
@@ -350,13 +360,45 @@ func (b *Broker) handleWill(sess *session.Session) {
 		if err := b.store.SavePendingWill(bgCtx(), pw); err != nil {
 			slog.Warn("store SavePendingWill failed", "client", clientID, "err", err)
 		}
-		time.AfterFunc(time.Duration(w.DelayInterval)*time.Second, func() {
+		topic := w.Topic
+		payload := w.Payload
+		q := w.QoS
+		ret := w.Retain
+		b.armWillTimer(clientID, time.Duration(w.DelayInterval)*time.Second, func() {
 			_ = b.store.DeletePendingWill(bgCtx(), clientID)
-			b.routeMessage(w.Topic, w.Payload, w.QoS, w.Retain, nil, clientID)
+			b.routeMessage(topic, payload, q, ret, nil, clientID)
 		})
 		return
 	}
 	b.routeMessage(w.Topic, w.Payload, w.QoS, w.Retain, nil, clientID)
+}
+
+// armWillTimer 注册延迟遗嘱投递 timer 并记录句柄，供同 client 重连时取消。
+func (b *Broker) armWillTimer(clientID string, delay time.Duration, do func()) {
+	timer := time.AfterFunc(delay, func() {
+		b.willMu.Lock()
+		delete(b.willTimers, clientID)
+		b.willMu.Unlock()
+		do()
+	})
+	b.willMu.Lock()
+	if old := b.willTimers[clientID]; old != nil {
+		old.Stop()
+	}
+	b.willTimers[clientID] = timer
+	b.willMu.Unlock()
+}
+
+// cancelPendingWill 取消并删除某 client 尚未投递的延迟遗嘱
+// (MQTT5: 延迟期间会话恢复时遗嘱必须被丢弃)。
+func (b *Broker) cancelPendingWill(clientID string) {
+	b.willMu.Lock()
+	if t := b.willTimers[clientID]; t != nil {
+		t.Stop()
+		delete(b.willTimers, clientID)
+	}
+	b.willMu.Unlock()
+	_ = b.store.DeletePendingWill(bgCtx(), clientID)
 }
 
 func (b *Broker) restorePendingWills() {
@@ -374,7 +416,7 @@ func (b *Broker) restorePendingWills() {
 			b.routeMessage(ww.Topic, ww.Payload, ww.QoS, ww.Retain, nil, ww.ClientID)
 			continue
 		}
-		time.AfterFunc(time.Duration(delay)*time.Millisecond, func() {
+		b.armWillTimer(ww.ClientID, time.Duration(delay)*time.Millisecond, func() {
 			_ = b.store.DeletePendingWill(bgCtx(), ww.ClientID)
 			b.routeMessage(ww.Topic, ww.Payload, ww.QoS, ww.Retain, nil, ww.ClientID)
 		})
@@ -471,3 +513,77 @@ func (b *Broker) limiterJanitor(ctx context.Context) {
 }
 
 //nolint:unused
+
+// ---------------------------------------------------------------------------
+// 会话过期清理 (P0-4)
+// ---------------------------------------------------------------------------
+
+// sessionJanitor 周期扫描离线持久会话，清理已超过 ExpiryInterval 的会话及其
+// 订阅/离线队列/挂起重试。
+func (b *Broker) sessionJanitor(ctx context.Context) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.sweepExpiredSessions()
+		}
+	}
+}
+
+// sweepExpiredSessions 删除所有已离线且超过 ExpiryInterval 的会话。
+func (b *Broker) sweepExpiredSessions() {
+	now := time.Now()
+	b.mu.RLock()
+	var expired []string
+	for id, sess := range b.sessions {
+		if sess == nil {
+			continue
+		}
+		if _, online := b.conns[id]; online {
+			continue
+		}
+		sess.Mu.Lock()
+		expiry := sess.ExpiryInterval
+		off := sess.OfflineSince
+		sess.Mu.Unlock()
+		if expiry == 0 || expiry == 0xFFFFFFFF || off.IsZero() {
+			continue
+		}
+		if now.After(off.Add(time.Duration(expiry) * time.Second)) {
+			expired = append(expired, id)
+		}
+	}
+	b.mu.RUnlock()
+	for _, id := range expired {
+		b.expireOfflineSession(id)
+	}
+	if len(expired) > 0 {
+		slog.Info("session expiry sweep", "expired", len(expired))
+	}
+}
+
+// expireOfflineSession 清理一个过期的离线持久会话。
+func (b *Broker) expireOfflineSession(clientID string) {
+	b.mu.RLock()
+	sess := b.sessions[clientID]
+	b.mu.RUnlock()
+	if sess == nil {
+		return
+	}
+	// 取消其挂起的 inflight 重试 (在内存 + store)
+	var ids []uint16
+	sess.Mu.Lock()
+	for pid := range sess.Inflight {
+		ids = append(ids, pid)
+	}
+	sess.Mu.Unlock()
+	for _, pid := range ids {
+		b.cancelRetry(clientID, pid)
+	}
+	if err := b.deleteSession(bgCtx(), clientID); err != nil {
+		slog.Warn("session expiry delete failed", "client", clientID, "err", err)
+	}
+}

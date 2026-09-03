@@ -54,5 +54,5 @@ func (b *Broker) onClusterMessage(msg *cluster.ClusterMessage) {
 	if msg.Topic == "" || msg.Topic[0] == '$' {
 		return
 	}
-	b.deliverLocal(msg.Topic, msg.Payload, msg.QoS, nil, msg.From)
+	b.deliverLocal(msg.Topic, msg.Payload, msg.QoS, false, nil, msg.From)
 }

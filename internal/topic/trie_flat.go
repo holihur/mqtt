@@ -7,7 +7,6 @@ package topic
 // 与默认实现共享同一 Trie 接口与 MQTT 语义，用于 A/B 压测。
 
 import (
-	"strings"
 	"sync"
 )
 
@@ -40,16 +39,12 @@ func (t *flatTrie) Match(topic string) []*SubEntry {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	var result []*SubEntry
-	sysTopic := strings.HasPrefix(topic, "$")
 	for _, s := range t.m {
-		if sysTopic && (s.Filter == "#" || strings.HasPrefix(s.Filter, "+") || strings.HasPrefix(s.Filter, "#")) {
-			continue
-		}
 		if MatchFilter(topic, s.Filter) {
 			result = append(result, entryCopy(s))
 		}
 	}
-	return result
+	return filterSysSubs(topic, result)
 }
 
 // Subscriptions returns all subscription entries (for management API).

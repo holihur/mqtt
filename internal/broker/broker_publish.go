@@ -283,12 +283,77 @@ func (b *Broker) routeMessage(topicName string, payload []byte, qos byte, retain
 			}
 		}()
 	}
-	b.deliverLocal(topicName, payload, qos, props, from)
+	b.deliverLocal(topicName, payload, qos, retain, props, from)
 }
 
-func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props *codec.Properties, from string) {
+// forwardPublishProps 构造要转发给 v5 订阅者的发布属性集 (MQTT5 §3.3.2.3)：
+// PayloadFormat/ContentType/ResponseTopic/CorrelationData/UserProperty 原样转发；
+// MessageExpiryInterval 透传 (服务端可在转发时缩减，此处不缩减)；
+// TopicAlias/SubscriptionID 不转发 (SubscriptionID 由服务端逐订阅附加)。
+func forwardPublishProps(in *codec.Properties) *codec.Properties {
+	if in == nil {
+		return nil
+	}
+	out := &codec.Properties{}
+	any := false
+	if in.PayloadFormatIndicator != nil {
+		out.PayloadFormatIndicator = in.PayloadFormatIndicator
+		any = true
+	}
+	if in.MessageExpiryInterval != nil {
+		out.MessageExpiryInterval = in.MessageExpiryInterval
+		any = true
+	}
+	if in.ContentType != nil {
+		out.ContentType = in.ContentType
+		any = true
+	}
+	if in.ResponseTopic != nil {
+		out.ResponseTopic = in.ResponseTopic
+		any = true
+	}
+	if len(in.CorrelationData) > 0 {
+		out.CorrelationData = append([]byte(nil), in.CorrelationData...)
+		any = true
+	}
+	if len(in.User) > 0 {
+		out.User = append([]codec.UserProperty(nil), in.User...)
+		any = true
+	}
+	if !any {
+		return nil
+	}
+	return out
+}
+
+// pubPropsForSub 返回单个订阅者要携带的属性：fwd (无逐订阅字段时直接共享,
+// 只读) 或 fwd+SubscriptionID 的拷贝；v3 返回 nil。
+func pubPropsForSub(fwd *codec.Properties, version byte, subIDs []uint32) *codec.Properties {
+	if version != codec.ProtocolV5 {
+		return nil
+	}
+	if fwd == nil {
+		if len(subIDs) == 0 {
+			return nil
+		}
+		return &codec.Properties{SubscriptionID: append([]uint32(nil), subIDs...)}
+	}
+	if len(subIDs) == 0 {
+		return fwd
+	}
+	cp := *fwd
+	cp.SubscriptionID = append([]uint32(nil), subIDs...)
+	return &cp
+}
+
+func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, retain bool, props *codec.Properties, from string) {
 	if props != nil && props.MessageExpiryInterval != nil && *props.MessageExpiryInterval == 0 {
 		mqttPacketDropped.WithLabelValues("message_expiry").Inc()
+	}
+	fwd := forwardPublishProps(props)
+	var subIDs []uint32
+	if props != nil {
+		subIDs = props.SubscriptionID
 	}
 	type shChoice struct {
 		group  string
@@ -342,6 +407,11 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 			q = storedQoS
 		}
 		pub := &codec.Packet{Type: codec.TypePUBLISH, Version: conn.Version(), Topic: topicName, QoS: q, Payload: payload}
+		if conn.Version() == codec.ProtocolV5 && retain {
+			if _, rap := sess.SubOptsFor("$share/" + ch.group + "/" + ch.filter); rap {
+				pub.Retain = true
+			}
+		}
 		if q > 0 {
 			if !sess.CanSend() {
 				if props != nil && props.MessageExpiryInterval != nil && *props.MessageExpiryInterval == 0 {
@@ -365,23 +435,21 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 			sess.AddInflight(&session.InflightEntry{PacketID: pub.PacketID, QoS: q, Topic: topicName, Payload: payload})
 			b.scheduleRetry(ch.client, pub.PacketID, 0)
 		}
-		if sess.Version == codec.ProtocolV5 && props != nil && len(props.SubscriptionID) > 0 {
-			pub.PubProps = &codec.Properties{SubscriptionID: props.SubscriptionID}
-		}
+		pub.PubProps = pubPropsForSub(fwd, conn.Version(), subIDs)
 		mqttMessagesSent.Inc()
 		mqttInflight.Set(float64(sess.InflightCount()))
 		_ = b.sendPacket(conn, pub)
 	}
 	subs := b.trie.Match(topicName)
-	// 广播快速路径: 无 hook 消费包 hex、且发布不带按订阅者的 v5 属性时，
+	// 广播快速路径: 无 hook 消费包 hex、无逐订阅者 v5 属性、且 retain 不参与时，
 	// QoS0 投递帧对所有匹配订阅者逐字节相同 —— 按线族 (v3.x / v5) 各 Encode
 	// 一次后共享写入，避免每个订阅者重复 Encode + 分配。
-	shareFrame := !b.hooks.PacketHexNeeded() && !(props != nil && len(props.SubscriptionID) > 0)
+	shareFrame := !retain && !b.hooks.PacketHexNeeded() && len(subIDs) == 0
 	var sharedV3, sharedV5 []byte
 	sharedFrame := func(isV5 bool, subClientID string) ([]byte, bool) {
 		if isV5 {
 			if sharedV5 == nil {
-				data, err := codec.Encode(&codec.Packet{Type: codec.TypePUBLISH, Version: codec.ProtocolV5, Topic: topicName, QoS: 0, Payload: payload})
+				data, err := codec.Encode(&codec.Packet{Type: codec.TypePUBLISH, Version: codec.ProtocolV5, Topic: topicName, QoS: 0, Payload: payload, PubProps: fwd})
 				if err != nil {
 					slog.Warn("deliver encode failed", "client", subClientID, "err", err)
 					return nil, false
@@ -430,8 +498,15 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 		if sub.QoS < deliverQoS {
 			deliverQoS = sub.QoS
 		}
+		// v5 RAP: 该订阅请求了 Retain As Published，转发时保留 Retain 标志
+		rapFlag := false
+		if retain && conn.Version() == codec.ProtocolV5 {
+			if _, rap := sess.SubOptsFor(sub.Filter); rap {
+				rapFlag = true
+			}
+		}
 		// QoS0 且可共享: 单次 Encode + WriteRaw 到每个订阅者
-		if deliverQoS == 0 && shareFrame {
+		if deliverQoS == 0 && shareFrame && !rapFlag {
 			isV5 := conn.Version() == codec.ProtocolV5
 			buf, okEncode := sharedFrame(isV5, sub.ClientID)
 			if !okEncode {
@@ -449,7 +524,7 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 			Topic:   topicName,
 			QoS:     deliverQoS,
 			Payload: payload,
-			Retain:  false,
+			Retain:  rapFlag,
 		}
 		if deliverQoS > 0 {
 			if !sess.CanSend() {
@@ -475,10 +550,8 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 			sess.AddInflight(e)
 			b.scheduleRetry(sess.ClientID, pub.PacketID, 0)
 		}
-		// v5 subscription ID
-		if sess.Version == codec.ProtocolV5 && props != nil && len(props.SubscriptionID) > 0 {
-			pub.PubProps = &codec.Properties{SubscriptionID: props.SubscriptionID}
-		}
+		// v5 转发属性 + SubscriptionID
+		pub.PubProps = pubPropsForSub(fwd, conn.Version(), subIDs)
 		mqttMessagesSent.Inc()
 		mqttInflight.Set(float64(sess.InflightCount() + 1))
 		if err := b.sendPacket(conn, pub); err != nil {

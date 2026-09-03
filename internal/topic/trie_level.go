@@ -112,19 +112,8 @@ func (t *levelTrie) Match(topic string) []*SubEntry {
 			stack = append(stack, frame{child, idx + 1})
 		}
 	}
-	// Filter $SYS violation: if topic starts with "$", remove subs whose filter is "#" or starts with "+"
-	if strings.HasPrefix(topic, "$") {
-		filtered := result[:0]
-		for _, s := range result {
-			if s.Filter == "#" || strings.HasPrefix(s.Filter, "+") || strings.HasPrefix(s.Filter, "#") {
-				continue
-			}
-			// also filter "+/#" etc already not matched because topic first level is $SYS, + would have matched but we skip
-			filtered = append(filtered, s)
-		}
-		result = filtered
-	}
-	return result
+	// Filter $SYS violation: 主题以 "$" 开头时滤除首层通配符/# 的订阅
+	return filterSysSubs(topic, result)
 }
 
 // Subscriptions returns all subscription entries across the trie (for management API).

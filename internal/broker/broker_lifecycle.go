@@ -206,6 +206,7 @@ func (b *Broker) initStart(ctx context.Context) (context.Context, error) {
 	go b.sysTicker(runCtx)
 	go b.limiterJanitor(runCtx)
 	go b.retryLoop(runCtx)
+	go b.sessionJanitor(runCtx)
 	if b.cfg.ACLFile != "" {
 		go b.watchACL(runCtx)
 	}

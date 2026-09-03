@@ -18,7 +18,14 @@ type Session struct {
 	Connected bool
 	NodeID    string // which broker node holds the connection
 
+	// OfflineSince 记录离线开始时间 (持久会话, 有限 ExpiryInterval 时用于过期清理)
+	OfflineSince time.Time
+
 	Subscriptions map[string]byte // filter -> QoS
+
+	// SubOpts 每订阅的 v5 选项位 (NoLocal=1, RAP=2)。缺失 key 视为 0。
+	// 与 Subscriptions 同 key，供重连重建与投递时读取。
+	SubOpts map[string]uint8
 
 	// Inflight for QoS1/2
 	Mu       sync.Mutex
@@ -71,7 +78,54 @@ func NewSession(clientID string, version byte, cleanStart bool, expiry uint32) *
 		TopicToAlias:      make(map[string]uint16),
 		CreatedAt:         time.Now(),
 		NextID:            1,
+		SubOpts:           make(map[string]uint8),
 	}
+}
+
+// SubOpt 位定义 (SubOpts 值)。
+const (
+	SubOptNoLocal uint8 = 1 << iota // v5 No Local
+	SubOptRAP                       // Retain As Published
+)
+
+// SetSubscriptionOpts 记录订阅的 QoS 与 v5 选项。
+func (s *Session) SetSubscriptionOpts(filter string, qos byte, noLocal, rap bool) {
+	s.Mu.Lock()
+	s.Subscriptions[filter] = qos
+	if noLocal || rap {
+		if s.SubOpts == nil {
+			s.SubOpts = make(map[string]uint8)
+		}
+		s.SubOpts[filter] = subOptsBits(noLocal, rap)
+	} else if s.SubOpts != nil {
+		delete(s.SubOpts, filter)
+	}
+	s.Mu.Unlock()
+}
+
+// SubOptsFor 返回某订阅的 v5 选项 (nil/缺失时均为 false)。
+func (s *Session) SubOptsFor(filter string) (noLocal, rap bool) {
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+	if s.SubOpts == nil {
+		return false, false
+	}
+	return subOptsRead(s.SubOpts[filter])
+}
+
+func subOptsBits(noLocal, rap bool) uint8 {
+	var v uint8
+	if noLocal {
+		v |= SubOptNoLocal
+	}
+	if rap {
+		v |= SubOptRAP
+	}
+	return v
+}
+
+func subOptsRead(v uint8) (noLocal, rap bool) {
+	return v&SubOptNoLocal != 0, v&SubOptRAP != 0
 }
 
 func (s *Session) NextPacketID() uint16 {
@@ -116,6 +170,9 @@ func (s *Session) SetSubscription(filter string, qos byte) {
 func (s *Session) DeleteSubscription(filter string) {
 	s.Mu.Lock()
 	delete(s.Subscriptions, filter)
+	if s.SubOpts != nil {
+		delete(s.SubOpts, filter)
+	}
 	s.Mu.Unlock()
 }
 

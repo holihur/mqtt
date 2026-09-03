@@ -112,7 +112,7 @@ func (b *Broker) handleSubscribe(conn *transport.Conn, sess *session.Session, pk
 			}
 		} else {
 			b.trie.Add(sub.Filter, sess.ClientID, sub.QoS, sub.NoLocal)
-			sess.SetSubscription(sub.Filter, sub.QoS)
+			sess.SetSubscriptionOpts(sub.Filter, sub.QoS, sub.NoLocal, sub.RetainAsPublished)
 			existing[sub.Filter] = sub.QoS
 			active++
 			if err := b.store.SaveSession(bgCtx(), sess); err != nil {
@@ -124,7 +124,23 @@ func (b *Broker) handleSubscribe(conn *transport.Conn, sess *session.Session, pk
 			}
 		}
 
+		// v5 Retain Handling: 决定本次订阅是否要补发 retain
+		sendRetained := true
+		if sess.Version == codec.ProtocolV5 {
+			switch sub.RetainHandling {
+			case 1:
+				if already {
+					sendRetained = false // 仅当订阅此前不存在时才发送
+				}
+			case 2:
+				sendRetained = false // 从不发送 retain
+			}
+		}
+
 		// deliver retained messages matching this filter (filter expired)
+		if !sendRetained {
+			continue
+		}
 		for _, m := range retained {
 			if m.IsExpired() {
 				_ = b.store.DeleteRetained(bgCtx(), m.Topic)

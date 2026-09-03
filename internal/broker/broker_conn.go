@@ -182,6 +182,8 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 	b.conns[clientID] = conn
 	b.sessions[clientID] = sess
 	b.mu.Unlock()
+	// MQTT5: 同一 clientID 恢复/重建会话时，丢弃其未投递的延迟遗嘱。
+	b.cancelPendingWill(clientID)
 	if err := b.store.SaveSession(bgCtx(), sess); err != nil {
 		slog.Warn("store SaveSession failed", "err", err)
 	}
@@ -242,7 +244,8 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 	b.debugPacket("send", clientID, connack)
 	slog.Info("client connected", "client", clientID, "addr", raw.RemoteAddr().String(), "sessionPresent", sessionPresent, "version", pkt.Version, "clean", pkt.ConnectFlags.CleanSession)
 	for filter, qos := range sess.SubscriptionsSnapshot() {
-		b.trie.Add(filter, clientID, qos, false)
+		nl, _ := sess.SubOptsFor(filter)
+		b.trie.Add(filter, clientID, qos, nl)
 	}
 
 	// Replay retained for existing subs? Not needed until SUBSCRIBE
