@@ -487,8 +487,123 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 	}
 }
 
+// ---------------------------------------------------------------------------
+// QoS 重试调度
+//
+// 持久化语义 (broker 崩溃后至少一次重投) 不变：投递时 SavePendingRetry、
+// ACK 时 DeletePendingRetry。唯一变化是触发方式：不再为每条消息创建
+// time.AfterFunc goroutine，而是由单一 retryLoop ticker 扫描在内存到期队列，
+// 快速 ACK 场景下不会再有 20s 后空转的定时器/多余 store 删除。
+// ---------------------------------------------------------------------------
+
+const (
+	retryDelay       = 20 * time.Second // 每次重试间隔
+	retryMaxAttempts = 5                // 超过则丢弃 inflight
+	retryScanTick    = 200 * time.Millisecond
+)
+
+// retryEntry 是在内存的到期重试项。
+type retryEntry struct {
+	clientID string
+	packetID uint16
+	retries  int
+	nextAt   int64 // unix millis
+}
+
+// armRetry 将到期项加入调度队列 (若已存在则更新)。
+func (b *Broker) armRetry(clientID string, packetID uint16, retries int, nextAt int64) {
+	b.retryMu.Lock()
+	m := b.retryQueue[clientID]
+	if m == nil {
+		m = make(map[uint16]*retryEntry)
+		b.retryQueue[clientID] = m
+	}
+	m[packetID] = &retryEntry{clientID: clientID, packetID: packetID, retries: retries, nextAt: nextAt}
+	b.retryMu.Unlock()
+}
+
+// disarmRetry 从内存调度队列移除到期项 (不触碰 store)。
+func (b *Broker) disarmRetry(clientID string, packetID uint16) {
+	b.retryMu.Lock()
+	if m := b.retryQueue[clientID]; m != nil {
+		delete(m, packetID)
+		if len(m) == 0 {
+			delete(b.retryQueue, clientID)
+		}
+	}
+	b.retryMu.Unlock()
+}
+
+// cancelRetry 取消在内存调度并删除持久化记录 (ACK / inflight 丢失路径)。
+func (b *Broker) cancelRetry(clientID string, packetID uint16) {
+	b.disarmRetry(clientID, packetID)
+	_ = b.store.DeletePendingRetry(bgCtx(), clientID, packetID)
+}
+
+// retryLoop 是 broker 级重试 ticker，周期性触发到期的重试。
+func (b *Broker) retryLoop(ctx context.Context) {
+	ticker := time.NewTicker(retryScanTick)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.processDueRetries()
+		}
+	}
+}
+
+func (b *Broker) processDueRetries() {
+	now := time.Now().UnixMilli()
+	b.retryMu.Lock()
+	var due []*retryEntry
+	for _, m := range b.retryQueue {
+		for _, e := range m {
+			if e.nextAt <= now {
+				due = append(due, e)
+			}
+		}
+	}
+	b.retryMu.Unlock()
+	for _, e := range due {
+		b.fireRetry(e.clientID, e.packetID, e.retries)
+	}
+}
+
+// fireRetry 处理一条到期重试：客户端在线且有对应 inflight 则 Dup 重投并
+// 安排下一次；否则清理。
+func (b *Broker) fireRetry(clientID string, packetID uint16, retries int) {
+	b.mu.RLock()
+	conn, ok1 := b.conns[clientID]
+	sess, ok2 := b.sessions[clientID]
+	b.mu.RUnlock()
+	// 客户端离线: 暂停重试 (与旧 AfterFunc 行为一致，持久化记录保留待 ACK 清理)
+	if !ok1 || !ok2 {
+		b.disarmRetry(clientID, packetID)
+		return
+	}
+	if retries >= retryMaxAttempts {
+		sess.RemoveInflight(packetID)
+		mqttPacketDropped.WithLabelValues("retry_exceeded").Inc()
+		slog.Warn("retry exceeded, dropping inflight", "client", clientID, "packetID", packetID)
+		b.cancelRetry(clientID, packetID)
+		return
+	}
+	if e, ok := sess.GetInflight(packetID); ok {
+		e.Dup = true
+		pub := &codec.Packet{Type: codec.TypePUBLISH, Version: conn.Version(), Topic: e.Topic, QoS: e.QoS, Payload: e.Payload, PacketID: packetID, Dup: true}
+		_ = b.sendPacket(conn, pub)
+		b.scheduleRetry(clientID, packetID, retries+1)
+	} else {
+		b.cancelRetry(clientID, packetID)
+	}
+}
+
+// scheduleRetry 投递 QoS>0 消息后调用：立即持久化 PendingRetry (崩溃恢复用)，
+// 并把到期重试加入内存调度队列 (不再 per-message time.AfterFunc)。
 func (b *Broker) scheduleRetry(clientID string, packetID uint16, retries int) {
-	if retries >= 5 {
+	if retries >= retryMaxAttempts {
 		b.mu.RLock()
 		sess, ok := b.sessions[clientID]
 		b.mu.RUnlock()
@@ -513,7 +628,7 @@ func (b *Broker) scheduleRetry(clientID string, packetID uint16, retries int) {
 			qos = e.QoS
 		}
 	}
-	nextAt := time.Now().UnixMilli() + 20*1000
+	nextAt := time.Now().UnixMilli() + retryDelay.Milliseconds()
 	pr := &persistence.PendingRetry{
 		ClientID:    clientID,
 		PacketID:    packetID,
@@ -527,21 +642,5 @@ func (b *Broker) scheduleRetry(clientID string, packetID uint16, retries int) {
 	if err := b.store.SavePendingRetry(bgCtx(), pr); err != nil {
 		slog.Warn("store SavePendingRetry failed", "client", clientID, "packetID", packetID, "err", err)
 	}
-	time.AfterFunc(20*time.Second, func() {
-		b.mu.RLock()
-		sess, ok1 := b.sessions[clientID]
-		conn, ok2 := b.conns[clientID]
-		b.mu.RUnlock()
-		if !ok1 || !ok2 {
-			return
-		}
-		if e, ok := sess.GetInflight(packetID); ok {
-			e.Dup = true
-			pub := &codec.Packet{Type: codec.TypePUBLISH, Version: conn.Version(), Topic: e.Topic, QoS: e.QoS, Payload: e.Payload, PacketID: packetID, Dup: true}
-			_ = b.sendPacket(conn, pub)
-			b.scheduleRetry(clientID, packetID, retries+1)
-		} else {
-			_ = b.store.DeletePendingRetry(bgCtx(), clientID, packetID)
-		}
-	})
+	b.armRetry(clientID, packetID, retries, nextAt)
 }

@@ -360,7 +360,7 @@ func (b *Broker) readLoop(conn *transport.Conn, sess *session.Session) {
 			b.handleUnsubscribe(conn, sess, pkt)
 		case codec.TypePUBACK:
 			sess.RemoveInflight(pkt.PacketID)
-			_ = b.store.DeletePendingRetry(bgCtx(), sess.ClientID, pkt.PacketID)
+			b.cancelRetry(sess.ClientID, pkt.PacketID)
 		case codec.TypePUBREC:
 			if _, ok := sess.GetInflight(pkt.PacketID); ok {
 				rel := &codec.Packet{Type: codec.TypePUBREL, Version: conn.Version(), PacketID: pkt.PacketID}
@@ -373,12 +373,12 @@ func (b *Broker) readLoop(conn *transport.Conn, sess *session.Session) {
 			} else {
 				sess.RemoveInflight(pkt.PacketID)
 			}
-			_ = b.store.DeletePendingRetry(bgCtx(), sess.ClientID, pkt.PacketID)
+			b.cancelRetry(sess.ClientID, pkt.PacketID)
 			comp := &codec.Packet{Type: codec.TypePUBCOMP, Version: conn.Version(), PacketID: pkt.PacketID}
 			_ = b.sendPacket(conn, comp)
 		case codec.TypePUBCOMP:
 			sess.RemoveInflight(pkt.PacketID)
-			_ = b.store.DeletePendingRetry(bgCtx(), sess.ClientID, pkt.PacketID)
+			b.cancelRetry(sess.ClientID, pkt.PacketID)
 		case codec.TypePINGREQ:
 			resp := &codec.Packet{Type: codec.TypePINGRESP, Version: conn.Version()}
 			_ = b.sendPacket(conn, resp)

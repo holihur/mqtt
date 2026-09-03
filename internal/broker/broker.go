@@ -106,6 +106,11 @@ type Broker struct {
 	limitMu  sync.Mutex
 	limiters map[string]*clientLimiter
 
+	// QoS1/QoS2 重试调度: 单 broker ticker 驱动在内存到期队列，替代每条消息
+	// 一个 time.AfterFunc。持久化 (SavePendingRetry/DeletePendingRetry) 语义不变。
+	retryMu    sync.Mutex
+	retryQueue map[string]map[uint16]*retryEntry // clientID -> packetID -> entry
+
 	remoteMu    sync.RWMutex
 	remoteTries map[string]*topic.Trie // nodeID -> trie of remote subs
 
@@ -145,6 +150,7 @@ func NewWithOptions(cfg Config, opts ...Option) (*Broker, error) {
 		conns:       make(map[string]*transport.Conn),
 		sessions:    make(map[string]*session.Session),
 		limiters:    make(map[string]*clientLimiter),
+		retryQueue:  make(map[string]map[uint16]*retryEntry),
 		remoteTries: make(map[string]*topic.Trie),
 		hooks:       hook.NewManager(),
 	}
@@ -389,6 +395,8 @@ func (b *Broker) restorePendingRetries() {
 		rr := r
 		delay := rr.NextRetryAt - now
 		if delay <= 0 {
+			// 已到期的: 客户端在线且有对应 inflight 则立即 Dup 重投并安排下一次；
+			// 否则删除失效的持久化记录。
 			b.mu.RLock()
 			sess, ok1 := b.sessions[rr.ClientID]
 			conn, ok2 := b.conns[rr.ClientID]
@@ -405,23 +413,8 @@ func (b *Broker) restorePendingRetries() {
 			_ = b.store.DeletePendingRetry(bgCtx(), rr.ClientID, rr.PacketID)
 			continue
 		}
-		time.AfterFunc(time.Duration(delay)*time.Millisecond, func() {
-			b.mu.RLock()
-			sess, ok1 := b.sessions[rr.ClientID]
-			conn, ok2 := b.conns[rr.ClientID]
-			b.mu.RUnlock()
-			if !ok1 || !ok2 {
-				return
-			}
-			if e, ok := sess.GetInflight(rr.PacketID); ok {
-				e.Dup = true
-				pub := &codec.Packet{Type: codec.TypePUBLISH, Version: conn.Version(), Topic: e.Topic, QoS: e.QoS, Payload: e.Payload, PacketID: rr.PacketID, Dup: true}
-				_ = b.sendPacket(conn, pub)
-				b.scheduleRetry(rr.ClientID, rr.PacketID, rr.Retries+1)
-			} else {
-				_ = b.store.DeletePendingRetry(bgCtx(), rr.ClientID, rr.PacketID)
-			}
-		})
+		// 未到期: 只入内存调度队列，由 retryLoop 在到期时触发。
+		b.armRetry(rr.ClientID, rr.PacketID, rr.Retries, rr.NextRetryAt)
 	}
 	if len(retries) > 0 {
 		slog.Info("restored pending retries", "count", len(retries))

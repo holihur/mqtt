@@ -9,6 +9,8 @@ import (
 	"mqtt/internal/codec"
 	"mqtt/internal/parser"
 	"mqtt/internal/persistence"
+	"mqtt/internal/session"
+	"mqtt/internal/transport"
 )
 
 func TestQoS1RetryAndDedup(t *testing.T) {
@@ -140,4 +142,112 @@ func TestOfflineQueue(t *testing.T) {
 
 func newCtx() (context.Context, context.CancelFunc) {
 	return context.WithCancel(context.Background())
+}
+
+// TestRetryLoopFiresDueEntries 覆盖 retryLoop ticker 触发在内存到期项的分支：
+// 到期后应发送 Dup PUBLISH 并安排下一次重试 (持久化 Retries+1)。
+func TestRetryLoopFiresDueEntries(t *testing.T) {
+	store := persistence.NewMemoryStore()
+	cfg := Config{NodeID: "retryloop", AllowAnonymous: true, MaxPublishPerSec: 1 << 30, MaxSubscribePerSec: 1 << 30}
+	b, err := NewWithOptions(cfg, WithStore(store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if err := b.StartAsync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// 在线订阅者: net.Pipe 写端给 broker，读端 drain 并解析 PUBLISH
+	c1, c2 := net.Pipe()
+	cc := transport.NewConn(c2, 1<<20)
+	cc.SetVersion(codec.ProtocolV311)
+	cc.SetClientID("rt-sub")
+	sess := session.NewSession("rt-sub", codec.ProtocolV311, true, 0)
+	b.mu.Lock()
+	b.conns["rt-sub"] = cc
+	b.sessions["rt-sub"] = sess
+	b.mu.Unlock()
+	packetID := uint16(7)
+	sess.AddInflight(&session.InflightEntry{PacketID: packetID, QoS: 1, Topic: "rt/t", Payload: []byte("x")})
+
+	type pubMsg struct {
+		dup      bool
+		packetID uint16
+	}
+	pubs := make(chan pubMsg, 4)
+	go func() {
+		var leftover []byte
+		rbuf := make([]byte, 4096)
+		for {
+			n, err := c1.Read(rbuf)
+			if err != nil {
+				return
+			}
+			buf := append(leftover, rbuf[:n]...)
+			for {
+				frame, rest, err := parser.SplitFrame(buf, 1<<20)
+				if err != nil {
+					break
+				}
+				pkt, derr := codec.Decode(frame)
+				if derr == nil && pkt.Type == codec.TypePUBLISH {
+					pubs <- pubMsg{dup: pkt.Dup, packetID: pkt.PacketID}
+				}
+				if len(rest) == 0 {
+					buf = nil
+					break
+				}
+				buf = rest
+			}
+			leftover = buf
+		}
+	}()
+
+	// 到期项: nextAt 在过去，retryLoop 下一个 tick (≤200ms) 应触发
+	b.armRetry("rt-sub", packetID, 0, time.Now().UnixMilli()-1000)
+
+	select {
+	case pm := <-pubs:
+		if !pm.dup || pm.packetID != packetID {
+			t.Fatalf("expected Dup PUBLISH pid=%d, got dup=%v pid=%d", packetID, pm.dup, pm.packetID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("retryLoop did not fire due entry within 2s")
+	}
+
+	// 重试后应持久化 Retries=1 并安排在将来 (20s)
+	time.Sleep(100 * time.Millisecond)
+	list, err := store.ListPendingRetries(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found *persistence.PendingRetry
+	for i := range list {
+		if list[i].PacketID == packetID {
+			found = list[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("pending retry not persisted after retryLoop fire")
+	}
+	if found.Retries != 1 || found.NextRetryAt <= time.Now().UnixMilli() {
+		t.Fatalf("pending retry state wrong: %+v", found)
+	}
+	// ACK 取消: 内存队列与持久化记录都应清除
+	b.cancelRetry("rt-sub", packetID)
+	b.retryMu.Lock()
+	_, stillArmed := b.retryQueue["rt-sub"][packetID]
+	b.retryMu.Unlock()
+	if stillArmed {
+		t.Fatal("entry still armed after cancelRetry")
+	}
+	list, _ = store.ListPendingRetries(context.Background())
+	for _, r := range list {
+		if r.PacketID == packetID {
+			t.Fatalf("pending retry still in store after cancelRetry")
+		}
+	}
+	_ = c1.Close()
+	_ = c2.Close()
 }
