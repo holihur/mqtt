@@ -6,9 +6,15 @@ vars:
 
 tasks:
   webui:
-    desc: 构建并嵌入 dashboard 前端
+    desc: 构建并嵌入 dashboard 前端 (产物嵌入 internal/webui/dist 供 go:embed)
+    dir: web/dashboard
     cmds:
-      - sh scripts/build-webui.sh
+      - cmd: test -d node_modules || npm ci --no-audit --no-fund
+      - npm run build
+      - |
+        rm -rf "{{.ROOT_DIR}}/internal/webui/dist"
+        mkdir -p "{{.ROOT_DIR}}/internal/webui/dist"
+        cp -r dist/. "{{.ROOT_DIR}}/internal/webui/dist/"
 
   build:
     desc: 编译 broker 二进制
