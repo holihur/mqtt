@@ -81,6 +81,10 @@ func (l *Listener) checkOrigin(r *http.Request) bool {
 	if originHost == r.Host {
 		return true
 	}
+	// 同 hostname（忽略端口）视为同源：dashboard(-webui) 与 WS(-ws) 通常同机不同端口。
+	if u.Hostname() != "" && u.Hostname() == hostnameOf(r.Host) {
+		return true
+	}
 	if _, ok := l.wsAllowOrigins[origin]; ok {
 		return true
 	}
@@ -91,6 +95,13 @@ func (l *Listener) checkOrigin(r *http.Request) bool {
 		return true
 	}
 	return false
+}
+
+func hostnameOf(host string) string {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		return h
+	}
+	return host
 }
 
 func (l *Listener) upgrader() websocket.Upgrader {

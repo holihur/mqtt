@@ -25,6 +25,16 @@ func TestCheckOrigin_SameHostAllowed(t *testing.T) {
 	}
 }
 
+func TestCheckOrigin_SameHostnameDifferentPortAllowed(t *testing.T) {
+	l := NewListener(":0", nil, ":0")
+	req, _ := http.NewRequest("GET", "http://example.com:8083/mqtt", nil)
+	req.Host = "example.com:8083"
+	req.Header.Set("Origin", "http://example.com:8080")
+	if !l.checkOrigin(req) {
+		t.Fatalf("same hostname with different port should be allowed")
+	}
+}
+
 func TestCheckOrigin_CrossOriginDenied(t *testing.T) {
 	l := NewListener(":0", nil, ":0")
 	req, _ := http.NewRequest("GET", "http://example.com/mqtt", nil)
