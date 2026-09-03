@@ -87,7 +87,7 @@ type clientLimiter struct {
 type Broker struct {
 	cfg        Config
 	store      persistence.Store
-	trie       *topic.Trie
+	trie       topic.Trie
 	sharedMu   sync.Mutex
 	sharedSubs map[string]map[string][]string // group -> filter -> []clientID
 	sharedIdx  map[string]int                 // group -> next index for round-robin
@@ -112,7 +112,7 @@ type Broker struct {
 	retryQueue map[string]map[uint16]*retryEntry // clientID -> packetID -> entry
 
 	remoteMu    sync.RWMutex
-	remoteTries map[string]*topic.Trie // nodeID -> trie of remote subs
+	remoteTries map[string]topic.Trie // nodeID -> trie of remote subs
 
 	hooks *hook.Manager
 
@@ -151,7 +151,7 @@ func NewWithOptions(cfg Config, opts ...Option) (*Broker, error) {
 		sessions:    make(map[string]*session.Session),
 		limiters:    make(map[string]*clientLimiter),
 		retryQueue:  make(map[string]map[uint16]*retryEntry),
-		remoteTries: make(map[string]*topic.Trie),
+		remoteTries: make(map[string]topic.Trie),
 		hooks:       hook.NewManager(),
 	}
 	for _, opt := range opts {
@@ -235,7 +235,7 @@ func New(cfg Config, store persistence.Store, authenticator auth.Authenticator) 
 			conns:       make(map[string]*transport.Conn),
 			sessions:    make(map[string]*session.Session),
 			limiters:    make(map[string]*clientLimiter),
-			remoteTries: make(map[string]*topic.Trie),
+			remoteTries: make(map[string]topic.Trie),
 			hooks:       hook.NewManager(),
 		}
 		if aa := hook.NewAuthAdapter(authenticator); aa != nil {

@@ -1,24 +1,25 @@
+// Package topic 提供 MQTT 主题订阅注册表（前缀树）及其匹配语义。
+//
+// # 实现可切换（build tags）
+//
+// 默认编译使用按 topic 层级的前缀树实现（trie_level.go）。可用
+//
+//	-tags flat_trie
+//
+// 切换为基于 filter 全量扫描的扁平实现（trie_flat.go），便于 A/B 压测两种
+// 结构在订阅量、fan-out 下的差异：
+//
+//	go test -bench=. ./internal/topic            # 默认 (层级 trie)
+//	go test -bench=. -tags flat_trie ./internal/topic
+//
+// 两个实现满足同一个 Trie 接口与同一套 MQTT 匹配语义（+/#、$ 前缀规则）。
 package topic
 
 import (
 	"strings"
-	"sync"
 )
 
-// Trie for topic filter matching. Supports + and # wildcards only in filters (not topic names).
-// Topic names must not contain +/#, but we don't enforce strictly for publish.
-
-type Trie struct {
-	mu   sync.RWMutex
-	root *node
-}
-
-type node struct {
-	children map[string]*node
-	subs     map[string]*SubEntry // key: clientID#filter (unique)
-	// for shared subs later?
-}
-
+// SubEntry 是单个订阅条目。
 type SubEntry struct {
 	ClientID string
 	Filter   string
@@ -26,147 +27,30 @@ type SubEntry struct {
 	NoLocal  bool
 }
 
-func NewTrie() *Trie {
-	return &Trie{root: &node{children: make(map[string]*node), subs: make(map[string]*SubEntry)}}
+// Trie 是订阅注册表接口：按 filter 注册客户端，并回答某具体主题会命中哪些
+// 订阅。实现必须自身线程安全。
+type Trie interface {
+	// Add 注册/更新客户端对 filter 的订阅 (QoS/noLocal 覆盖旧值)。
+	Add(filter, clientID string, qos byte, noLocal bool)
+	// Remove 移除客户端对 filter 的订阅。
+	Remove(filter, clientID string)
+	// Match 返回订阅 filter 匹配给定具体主题 (含 +/# 与 $ 规则) 的全部条目。
+	Match(topic string) []*SubEntry
+	// Subscriptions 返回全部订阅条目 (管理 API 用)。
+	Subscriptions() []*SubEntry
+	// SubscriptionsFor 返回某客户端的全部订阅条目 (管理 API 用)。
+	SubscriptionsFor(clientID string) []*SubEntry
 }
 
-func (t *Trie) Add(filter, clientID string, qos byte, noLocal bool) {
-	levels := strings.Split(filter, "/")
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	n := t.root
-	for _, lv := range levels {
-		if n.children[lv] == nil {
-			n.children[lv] = &node{children: make(map[string]*node), subs: make(map[string]*SubEntry)}
-		}
-		n = n.children[lv]
-	}
-	key := clientID + "#" + filter
-	n.subs[key] = &SubEntry{ClientID: clientID, Filter: filter, QoS: qos, NoLocal: noLocal}
-}
+// NewTrie 由 build tag 选择实现：
+//   - 默认 (无 tag): 按层前缀树 trie_level.go
+//   - -tags flat_trie: 扁平实现 trie_flat.go
+//
+// (实现分别位于 trie_level.go / trie_flat.go，受对应 build tag 约束。)
 
-func (t *Trie) Remove(filter, clientID string) {
-	levels := strings.Split(filter, "/")
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	n := t.root
-	var stack []*node
-	stack = append(stack, n)
-	for _, lv := range levels {
-		c := n.children[lv]
-		if c == nil {
-			return
-		}
-		n = c
-		stack = append(stack, n)
-	}
-	key := clientID + "#" + filter
-	delete(n.subs, key)
-	// prune empty branches
-	for i := len(levels); i >= 0; i-- {
-		cur := stack[i]
-		if len(cur.subs) == 0 && len(cur.children) == 0 && i > 0 {
-			parent := stack[i-1]
-			delete(parent.children, levels[i-1])
-		} else {
-			break
-		}
-	}
-}
-
-// Match returns all subscribers whose filter matches topic.
-func (t *Trie) Match(topic string) []*SubEntry {
-	levels := strings.Split(topic, "/")
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	var result []*SubEntry
-	type frame struct {
-		n   *node
-		idx int
-	}
-	stack := []frame{{t.root, 0}}
-	for len(stack) > 0 {
-		f := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-		n, idx := f.n, f.idx
-		if n == nil {
-			continue
-		}
-		if idx == len(levels) {
-			for _, s := range n.subs {
-				result = append(result, s)
-			}
-			if child, ok := n.children["#"]; ok {
-				for _, s := range child.subs {
-					result = append(result, s)
-				}
-			}
-			continue
-		}
-		if child, ok := n.children["#"]; ok {
-			for _, s := range child.subs {
-				result = append(result, s)
-			}
-		}
-		if child, ok := n.children["+"]; ok {
-			stack = append(stack, frame{child, idx + 1})
-		}
-		if child, ok := n.children[levels[idx]]; ok {
-			stack = append(stack, frame{child, idx + 1})
-		}
-	}
-	// Filter $SYS violation: if topic starts with "$", remove subs whose filter is "#" or starts with "+"
-	if strings.HasPrefix(topic, "$") {
-		filtered := result[:0]
-		for _, s := range result {
-			if s.Filter == "#" || strings.HasPrefix(s.Filter, "+") || strings.HasPrefix(s.Filter, "#") {
-				continue
-			}
-			// also filter "+/#" etc already not matched because topic first level is $SYS, + would have matched but we skip
-			filtered = append(filtered, s)
-		}
-		result = filtered
-	}
-	return result
-}
-
-// Subscriptions returns all subscription entries across the trie (for management API).
-func (t *Trie) Subscriptions() []*SubEntry {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	var out []*SubEntry
-	var walk func(n *node)
-	walk = func(n *node) {
-		for _, s := range n.subs {
-			out = append(out, &SubEntry{ClientID: s.ClientID, Filter: s.Filter, QoS: s.QoS, NoLocal: s.NoLocal})
-		}
-		for _, c := range n.children {
-			walk(c)
-		}
-	}
-	walk(t.root)
-	return out
-}
-
-// SubscriptionsFor returns all subscription entries of a given client (for management API).
-func (t *Trie) SubscriptionsFor(clientID string) []*SubEntry {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	var out []*SubEntry
-	var walk func(n *node)
-	walk = func(n *node) {
-		for _, s := range n.subs {
-			if s.ClientID == clientID {
-				out = append(out, &SubEntry{ClientID: s.ClientID, Filter: s.Filter, QoS: s.QoS, NoLocal: s.NoLocal})
-			}
-		}
-		for _, c := range n.children {
-			walk(c)
-		}
-	}
-	walk(t.root)
-	return out
-}
+// ---------------------------------------------------------------------------
+// 无状态校验/匹配工具 (两个实现共用)
+// ---------------------------------------------------------------------------
 
 // IsValidFilter validates filter per MQTT spec.
 func IsValidFilter(f string) bool {
@@ -233,4 +117,32 @@ func MatchFilter(topic, filter string) bool {
 		}
 	}
 	return len(tLevels) == len(fLevels)
+}
+
+// subKey 构造 map key：同一 client 对同一 filter 至多一条。
+func subKey(clientID, filter string) string { return clientID + "#" + filter }
+
+// entryCopy 返回浅拷贝，避免外部持有内部指针被并发修改。
+func entryCopy(s *SubEntry) *SubEntry {
+	if s == nil {
+		return nil
+	}
+	c := *s
+	return &c
+}
+
+// filterSysSubs 应用 MQTT 的 $ 前缀规则：主题以 "$" 开头时，滤除 filter 为
+// "#" 或首层为通配符 (+/#) 的订阅。三个实现共用，保证语义一致。
+func filterSysSubs(topic string, result []*SubEntry) []*SubEntry {
+	if !strings.HasPrefix(topic, "$") || len(result) == 0 {
+		return result
+	}
+	filtered := result[:0]
+	for _, s := range result {
+		if s.Filter == "#" || strings.HasPrefix(s.Filter, "+") || strings.HasPrefix(s.Filter, "#") {
+			continue
+		}
+		filtered = append(filtered, s)
+	}
+	return filtered
 }
