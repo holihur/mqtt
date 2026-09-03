@@ -43,6 +43,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Delete stale release if tag was re-pushed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $GITHUB_REF_NAME already exists (re-pushed tag) — deleting stale release"
+            gh release delete "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --yes
+          else
+            echo "no existing release for $GITHUB_REF_NAME"
+          fi
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
