@@ -9,17 +9,6 @@ tasks:
     desc: 构建并嵌入 dashboard 前端
     cmds:
       - sh scripts/build-webui.sh
-    sources:
-      - web/dashboard/**/*.ts
-      - web/dashboard/**/*.tsx
-      - web/dashboard/**/*.html
-      - web/dashboard/**/*.css
-      - web/dashboard/**/*.json
-      - web/dashboard/package.json
-      - web/dashboard/package-lock.json
-    generates:
-      - internal/webui/dist/index.html
-    method: timestamp
 
   build:
     desc: 编译 broker 二进制
