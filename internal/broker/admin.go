@@ -19,6 +19,7 @@ package broker
 //	DELETE /api/v1/sessions/{id}   删除会话 (踢下线 + 清 store + 清订阅)
 //	GET    /api/v1/subscriptions   全部订阅
 //	GET    /api/v1/subscriptions/{id}  某客户端订阅
+//	GET    /api/v1/subscriptions/match?topic=t  按 MQTT 通配符规则匹配某具体主题的订阅者
 //	GET    /api/v1/retained?with_payload=true   retain 列表 (默认不含 payload)
 //	DELETE /api/v1/retained?topic=t 或 ?all=true   删除 retain
 //	POST   /api/v1/publish         发布消息 {topic, payload|payloadB64, qos, retain}
@@ -41,6 +42,7 @@ import (
 
 	"mqtt/internal/codec"
 	"mqtt/internal/session"
+	"mqtt/internal/topic"
 	"mqtt/internal/transport"
 	"mqtt/internal/webui"
 )
@@ -183,6 +185,7 @@ func (s *adminServer) mux() *http.ServeMux {
 	mux.HandleFunc("GET /api/v1/sessions/{clientID}", s.handleGetSession)
 	mux.HandleFunc("DELETE /api/v1/sessions/{clientID}", s.handleDeleteSession)
 	mux.HandleFunc("GET /api/v1/subscriptions", s.handleListSubscriptions)
+	mux.HandleFunc("GET /api/v1/subscriptions/match", s.handleMatchSubscriptions)
 	mux.HandleFunc("GET /api/v1/subscriptions/{clientID}", s.handleClientSubscriptions)
 	mux.HandleFunc("GET /api/v1/retained", s.handleListRetained)
 	mux.HandleFunc("DELETE /api/v1/retained", s.handleDeleteRetained)
@@ -355,6 +358,32 @@ func (s *adminServer) handleClientSubscriptions(w http.ResponseWriter, r *http.R
 		out = append(out, subscriptionResponse{ClientID: e.ClientID, Filter: e.Filter, QoS: e.QoS, NoLocal: e.NoLocal})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Filter < out[j].Filter })
+	s.writeJSON(w, http.StatusOK, out)
+}
+
+// handleMatchSubscriptions 返回会收到某具体主题消息的全部订阅 (GET /api/v1/subscriptions/match?topic=t)。
+// 复用订阅 Trie 的 MQTT 通配符匹配 (含 +/# 展开与 $ 前缀规则)。
+func (s *adminServer) handleMatchSubscriptions(w http.ResponseWriter, r *http.Request) {
+	topicName := r.URL.Query().Get("topic")
+	if topicName == "" {
+		s.writeJSON(w, http.StatusBadRequest, apiError{Error: "missing \"topic\" query param"})
+		return
+	}
+	if !topic.IsValidTopic(topicName) {
+		s.writeJSON(w, http.StatusBadRequest, apiError{Error: "invalid topic: must not contain + or #"})
+		return
+	}
+	entries := s.b.trie.Match(topicName)
+	out := make([]subscriptionResponse, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, subscriptionResponse{ClientID: e.ClientID, Filter: e.Filter, QoS: e.QoS, NoLocal: e.NoLocal})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ClientID == out[j].ClientID {
+			return out[i].Filter < out[j].Filter
+		}
+		return out[i].ClientID < out[j].ClientID
+	})
 	s.writeJSON(w, http.StatusOK, out)
 }
 

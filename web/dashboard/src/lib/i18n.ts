@@ -97,6 +97,11 @@ const en = {
     filter: 'Topic Filter',
     qos: 'QoS',
     noLocal: 'No Local',
+    matchTitle: 'Find subscribers by topic',
+    matchPlaceholder: 'e.g. sensors/room1/temp',
+    matchButton: 'Match',
+    matchHint: 'Returns every subscription whose topic filter would receive messages on this exact topic (MQTT +/# matching applied).',
+    matchEmpty: 'No subscribers match this topic',
   },
   retained: {
     title: 'Retained Messages',
@@ -278,6 +283,11 @@ const zh: typeof en = {
     filter: '主题过滤器',
     qos: 'QoS',
     noLocal: 'No Local',
+    matchTitle: '按主题查找订阅者',
+    matchPlaceholder: '例如 sensors/room1/temp',
+    matchButton: '匹配',
+    matchHint: '按 MQTT 通配符规则 (+/#) 找出会收到该具体主题消息的所有订阅。',
+    matchEmpty: '没有订阅者匹配该主题',
   },
   retained: {
     title: '保留消息',

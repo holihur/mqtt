@@ -577,3 +577,47 @@ func TestAdminACLReloadNoACL(t *testing.T) {
 		t.Fatalf("acl reload without FileACL: want 400, got %d", resp.StatusCode)
 	}
 }
+
+func TestAdminSubscriptionsMatch(t *testing.T) {
+	b, srv := newAdminAPI(t, Config{AdminToken: "s3cret"})
+
+	b.trie.Add("sensors/+/temp", "c1", 0, false)
+	b.trie.Add("sensors/#", "c2", 1, false)
+	b.trie.Add("other/thing", "c3", 0, false)
+	b.trie.Add("#", "c4", 2, false)
+
+	// 匹配具体主题: c1 (+)、c2 (#)、c4 (根 #) 应命中，c3 不命中
+	resp, body := apiDo(t, srv, "s3cret", http.MethodGet, "/api/v1/subscriptions/match?topic=sensors/room1/temp", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("match: %d %s", resp.StatusCode, body)
+	}
+	var subs []subscriptionResponse
+	if err := json.Unmarshal(body, &subs); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got := map[string]string{}
+	for _, s := range subs {
+		got[s.ClientID] = s.Filter
+	}
+	if len(got) != 3 {
+		t.Fatalf("match: want 3 clients, got %+v", subs)
+	}
+	if got["c1"] != "sensors/+/temp" || got["c2"] != "sensors/#" || got["c4"] != "#" {
+		t.Fatalf("match result: %+v", subs)
+	}
+	if _, ok := got["c3"]; ok {
+		t.Fatalf("c3 should not match, got %+v", subs)
+	}
+
+	// 缺失 topic → 400
+	resp, _ = apiDo(t, srv, "s3cret", http.MethodGet, "/api/v1/subscriptions/match", nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing topic: want 400, got %d", resp.StatusCode)
+	}
+
+	// 主题含通配符 → 400
+	resp, _ = apiDo(t, srv, "s3cret", http.MethodGet, "/api/v1/subscriptions/match?topic=sensors/%2B/temp", nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("wildcard topic: want 400, got %d", resp.StatusCode)
+	}
+}

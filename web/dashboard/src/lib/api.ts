@@ -256,6 +256,8 @@ export const api = {
         ? `/subscriptions/${encodeURIComponent(clientId)}`
         : '/subscriptions',
     ),
+  matchSubscriptions: (topic: string) =>
+    request<Subscription[]>(`/subscriptions/match?topic=${encodeURIComponent(topic)}`),
   retained: (withPayload = false) =>
     request<RetainedMessage[]>(`/retained${withPayload ? '?with_payload=true' : ''}`),
   deleteRetained: (topic: string) =>
