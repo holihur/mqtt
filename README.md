@@ -3,6 +3,17 @@
 
 支持 **MQTT 3.1 (0x03) / 3.1.1 (0x04) / 5.0 (0x05)** 的分布式 Broker，单机可跑，多实例通过 Redis 水平扩展。
 
+## 一键安装
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/holihur/mqtt/main/install.sh | sh
+
+# 或指定版本 / 安装目录 / 附带 systemd 服务 (需 root)
+sh install.sh --version v0.2.0 --prefix /usr/local/bin --service
+```
+
+脚本会下载对应平台 (linux/darwin · amd64/arm64) 的 release 二进制、校验 sha256 后安装到 `/usr/local/bin/broker`。
+
 ## 架构
 
 ```

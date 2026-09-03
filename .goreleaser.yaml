@@ -60,3 +60,8 @@ release:
     docker pull ghcr.io/holihur/mqtt:{{ .Version }}
     docker run -p 1883:1883 -p 8083:8083 ghcr.io/holihur/mqtt:{{ .Version }}
     ```
+
+    ### 一键安装
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/holihur/mqtt/main/install.sh | sh
+    ```
