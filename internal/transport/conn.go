@@ -90,12 +90,25 @@ func (c *Conn) WritePacket(p *codec.Packet) error {
 		}
 		slog.Debug("packet send", "client", c.clientID, "type", p.Type, "hex", hexStr, "len", len(data))
 	}
+	return c.writeRaw(data)
+}
+
+// WriteRaw writes an already-encoded frame to the wire.  Used by the broker
+// fan-out fast path: the same QoS0 PUBLISH frame is encoded once and shared
+// with every matching subscriber, avoiding one encode + allocation per
+// subscriber.  Callers must not mutate data while this is in flight (the write
+// is synchronous, so reusing the buffer after the call returns is safe).
+func (c *Conn) WriteRaw(data []byte) error {
+	return c.writeRaw(data)
+}
+
+func (c *Conn) writeRaw(data []byte) error {
 	c.writerMu.Lock()
 	defer c.writerMu.Unlock()
 	if c.writeTimeout > 0 {
 		_ = c.raw.SetWriteDeadline(time.Now().Add(c.writeTimeout))
 	}
-	_, err = c.raw.Write(data)
+	_, err := c.raw.Write(data)
 	return err
 }
 

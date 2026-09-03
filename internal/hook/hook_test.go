@@ -171,6 +171,26 @@ func TestExecPacket(t *testing.T) {
 	m.ExecPacket("in", "c", &codec.Packet{Type: 3}, "0x30")
 }
 
+func TestPacketHexNeeded(t *testing.T) {
+	m := NewManager()
+	if m.PacketHexNeeded() {
+		t.Fatal("empty manager must not need hex")
+	}
+	m.Register(BaseHook{})
+	if m.PacketHexNeeded() {
+		t.Fatal("base hook must not need hex")
+	}
+	m.Register(HexDumpHook{})
+	if !m.PacketHexNeeded() {
+		t.Fatal("hex-dump hook must need hex")
+	}
+	// nil manager defensive check
+	var nilM *Manager
+	if nilM.PacketHexNeeded() {
+		t.Fatal("nil manager must not need hex")
+	}
+}
+
 // nil manager tests (defensive nil checks)
 func TestNilManager(t *testing.T) {
 	var m *Manager

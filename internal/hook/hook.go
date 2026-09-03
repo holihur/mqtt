@@ -25,6 +25,13 @@ type Hook interface {
 	OnPacket(dir, clientID string, pkt *codec.Packet, hex string)
 }
 
+// PacketHexSink 由真正需要消费原始包 hex dump 的 hook 实现（如审计/调试）。
+// broker 只在存在这类 hook（或 debug 日志开启）时才计算 hex，避免每次收/发
+// 包都做一次额外 Encode + hex 格式化。
+type PacketHexSink interface {
+	PacketHexNeeded() bool
+}
+
 // BaseHook provides no-op defaults so implementors can override selectively.
 type BaseHook struct{}
 
@@ -77,6 +84,21 @@ func (m *Manager) Len() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.hooks)
+}
+
+// PacketHexNeeded reports whether any registered hook consumes the raw packet
+// hex dump.  If false, the broker can skip hex encoding entirely on the hot
+// path (e.g. the always-present auth adapter does not need it).
+func (m *Manager) PacketHexNeeded() bool {
+	if m == nil {
+		return false
+	}
+	for _, h := range m.Hooks() {
+		if sink, ok := h.(PacketHexSink); ok && sink.PacketHexNeeded() {
+			return true
+		}
+	}
+	return false
 }
 
 // ExecAuth calls all hooks for authentication. First error denies auth.

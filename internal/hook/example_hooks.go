@@ -165,6 +165,8 @@ type HexDumpHook struct{ BaseHook }
 
 func (HexDumpHook) ID() string { return "hex-dump" }
 
+func (HexDumpHook) PacketHexNeeded() bool { return true }
+
 func (HexDumpHook) OnPacket(dir, clientID string, pkt *codec.Packet, hex string) {
 	if !slog.Default().Enabled(context.Background(), slog.LevelDebug) {
 		return

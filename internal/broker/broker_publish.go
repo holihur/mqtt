@@ -31,9 +31,15 @@ func packetHex(p *codec.Packet) string {
 }
 
 func (b *Broker) debugPacket(dir, clientID string, pkt *codec.Packet) {
+	// hex 编码成本高（= 再次完整 Encode + 格式化），只在确有消费方时计算：
+	// 存在需要 hex 的 hook，或 slog debug 开启。
+	debugOn := slog.Default().Enabled(context.Background(), slog.LevelDebug)
+	if !debugOn && !b.hooks.PacketHexNeeded() {
+		return
+	}
 	hex := packetHex(pkt)
 	b.hooks.ExecPacket(dir, clientID, pkt, hex)
-	if b.hooks.Len() == 0 && slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+	if b.hooks.Len() == 0 && debugOn {
 		slog.Debug("packet "+dir, "client", clientID, "type", pkt.Type, "version", pkt.Version, "hex", hex)
 	}
 }
@@ -367,6 +373,33 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 		_ = b.sendPacket(conn, pub)
 	}
 	subs := b.trie.Match(topicName)
+	// 广播快速路径: 无 hook 消费包 hex、且发布不带按订阅者的 v5 属性时，
+	// QoS0 投递帧对所有匹配订阅者逐字节相同 —— 按线族 (v3.x / v5) 各 Encode
+	// 一次后共享写入，避免每个订阅者重复 Encode + 分配。
+	shareFrame := !b.hooks.PacketHexNeeded() && !(props != nil && len(props.SubscriptionID) > 0)
+	var sharedV3, sharedV5 []byte
+	sharedFrame := func(isV5 bool, subClientID string) ([]byte, bool) {
+		if isV5 {
+			if sharedV5 == nil {
+				data, err := codec.Encode(&codec.Packet{Type: codec.TypePUBLISH, Version: codec.ProtocolV5, Topic: topicName, QoS: 0, Payload: payload})
+				if err != nil {
+					slog.Warn("deliver encode failed", "client", subClientID, "err", err)
+					return nil, false
+				}
+				sharedV5 = data
+			}
+			return sharedV5, true
+		}
+		if sharedV3 == nil {
+			data, err := codec.Encode(&codec.Packet{Type: codec.TypePUBLISH, Version: codec.ProtocolV311, Topic: topicName, QoS: 0, Payload: payload})
+			if err != nil {
+				slog.Warn("deliver encode failed", "client", subClientID, "err", err)
+				return nil, false
+			}
+			sharedV3 = data
+		}
+		return sharedV3, true
+	}
 	for _, sub := range subs {
 		if sub.ClientID == from && sub.NoLocal {
 			continue
@@ -396,6 +429,19 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, props 
 		deliverQoS := qos
 		if sub.QoS < deliverQoS {
 			deliverQoS = sub.QoS
+		}
+		// QoS0 且可共享: 单次 Encode + WriteRaw 到每个订阅者
+		if deliverQoS == 0 && shareFrame {
+			isV5 := conn.Version() == codec.ProtocolV5
+			buf, okEncode := sharedFrame(isV5, sub.ClientID)
+			if !okEncode {
+				continue
+			}
+			mqttMessagesSent.Inc()
+			if err := conn.WriteRaw(buf); err != nil {
+				slog.Warn("deliver failed", "client", sub.ClientID, "err", err)
+			}
+			continue
 		}
 		pub := &codec.Packet{
 			Type:    codec.TypePUBLISH,
