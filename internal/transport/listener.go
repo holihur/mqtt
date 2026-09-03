@@ -94,7 +94,9 @@ func (l *Listener) checkOrigin(r *http.Request) bool {
 }
 
 func (l *Listener) upgrader() websocket.Upgrader {
-	return websocket.Upgrader{CheckOrigin: l.checkOrigin}
+	// MQTT over WebSocket 子协议: MQTT.js 使用 "mqtt" (3.1.1/5.0) 或 "mqttv3.1"
+	// (旧 MQIsdp)。若不声明, 浏览器端 WebSocket 将拿不到协议协商结果。
+	return websocket.Upgrader{CheckOrigin: l.checkOrigin, Subprotocols: []string{"mqtt", "mqttv3.1"}}
 }
 
 func (l *Listener) Addr() string {

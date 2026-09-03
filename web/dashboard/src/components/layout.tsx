@@ -4,6 +4,7 @@ import {
   HardDrive,
   LayoutDashboard,
   ListTree,
+  Radio,
   Send,
   Settings,
   Users,
@@ -20,6 +21,7 @@ export type PageKey =
   | 'sessions'
   | 'subscriptions'
   | 'retained'
+  | 'live'
   | 'publish'
   | 'settings'
 
@@ -29,6 +31,7 @@ const NAV: { key: PageKey; icon: LucideIcon; labelKey: string }[] = [
   { key: 'sessions', icon: HardDrive, labelKey: 'nav.sessions' },
   { key: 'subscriptions', icon: ListTree, labelKey: 'nav.subscriptions' },
   { key: 'retained', icon: Archive, labelKey: 'nav.retained' },
+  { key: 'live', icon: Radio, labelKey: 'nav.live' },
   { key: 'publish', icon: Send, labelKey: 'nav.publish' },
   { key: 'settings', icon: Settings, labelKey: 'nav.settings' },
 ]

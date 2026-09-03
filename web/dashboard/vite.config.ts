@@ -16,6 +16,11 @@ export default defineConfig({
         target: 'http://127.0.0.1:6061',
         changeOrigin: true,
       },
+      '/mqtt': {
+        target: 'ws://127.0.0.1:8083',
+        ws: true,
+        changeOrigin: true,
+      },
     },
   },
 })

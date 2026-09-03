@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { RefreshCw, Save } from 'lucide-react'
 
-import { api, getApiBase, getToken, setApiBase, setToken } from '@/lib/api'
+import { api, getApiBase, getToken, getWsUrl, setApiBase, setToken, setWsUrl } from '@/lib/api'
 import { changeLanguage } from '@/lib/i18n'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -26,6 +26,7 @@ export function SettingsPage({ theme, onThemeChange }: SettingsProps) {
   const { t, i18n } = useTranslation()
   const [apiBase, setApiBaseState] = useState(getApiBase())
   const [token, setTokenState] = useState(getToken())
+  const [wsUrl, setWsUrlState] = useState(getWsUrl())
   const [aclBusy, setAclBusy] = useState(false)
 
   const lang = i18n.language.toLowerCase().startsWith('zh') ? 'zh' : 'en'
@@ -33,6 +34,7 @@ export function SettingsPage({ theme, onThemeChange }: SettingsProps) {
   function saveConnection() {
     setApiBase(apiBase)
     setToken(token.trim())
+    setWsUrl(wsUrl)
     toast.success(t('settings.saved'))
     window.setTimeout(() => window.location.reload(), 700)
   }
@@ -80,6 +82,17 @@ export function SettingsPage({ theme, onThemeChange }: SettingsProps) {
               autoComplete="off"
             />
             <p className="text-muted-foreground text-xs">{t('settings.tokenDesc')}</p>
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="set-ws">{t('settings.wsUrl')}</Label>
+            <Input
+              id="set-ws"
+              value={wsUrl}
+              onChange={(e) => setWsUrlState(e.target.value)}
+              placeholder="ws://localhost:8083/mqtt"
+              className="font-mono"
+            />
+            <p className="text-muted-foreground text-xs">{t('settings.wsUrlDesc')}</p>
           </div>
           <div>
             <Button onClick={saveConnection}>

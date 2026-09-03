@@ -46,6 +46,33 @@ func TestUpgraderCheckOrigin(t *testing.T) {
 	}
 }
 
+func TestUpgraderSubprotocol(t *testing.T) {
+	l := NewListener(":0", nil, ":0")
+	upgrader := l.upgrader()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		ws.Close()
+	}))
+	defer server.Close()
+
+	url := "ws" + server.URL[4:] + "/mqtt"
+	for _, sub := range []string{"mqtt", "mqttv3.1"} {
+		dialer := websocket.Dialer{Subprotocols: []string{sub}}
+		ws, resp, err := dialer.Dial(url, nil)
+		if err != nil {
+			t.Fatalf("dial subprotocol %s: %v", sub, err)
+		}
+		if got := resp.Header.Get("Sec-WebSocket-Protocol"); got != sub {
+			t.Fatalf("negotiated subprotocol = %q, want %q", got, sub)
+		}
+		ws.Close()
+	}
+}
+
 func TestCheckOrigin_InvalidURL(t *testing.T) {
 	l := NewListener(":0", nil, ":0")
 	req, _ := http.NewRequest("GET", "http://example.com/mqtt", nil)

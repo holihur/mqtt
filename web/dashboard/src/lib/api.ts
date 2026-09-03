@@ -2,6 +2,9 @@ const BASE_KEY = 'mqtt-dash.apiBase'
 const TOKEN_KEY = 'mqtt-dash.token'
 const LANG_KEY = 'mqtt-dash.lang'
 const THEME_KEY = 'mqtt-dash.theme'
+const WS_KEY = 'mqtt-dash.wsUrl'
+const MQTT_USER_KEY = 'mqtt-dash.mqttUser'
+const MQTT_PASS_KEY = 'mqtt-dash.mqttPass'
 
 export function getApiBase(): string {
   const saved = localStorage.getItem(BASE_KEY)
@@ -41,6 +44,35 @@ export function getTheme(): 'light' | 'dark' {
 
 export function setTheme(v: 'light' | 'dark') {
   localStorage.setItem(THEME_KEY, v)
+}
+
+// WebSocket (MQTT over WS) 地址, 默认同 host 的 8083 端口 /mqtt 路径
+export function getWsUrl(): string {
+  const saved = localStorage.getItem(WS_KEY)
+  if (saved) return saved
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  return `${proto}://${window.location.hostname}:8083/mqtt`
+}
+
+export function setWsUrl(v: string) {
+  const v2 = v.trim().replace(/\/$/, '')
+  if (v2) localStorage.setItem(WS_KEY, v2)
+  else localStorage.removeItem(WS_KEY)
+}
+
+// MQTT (WS) 连接可选的用户名/密码，用于 SimpleAuth / FileACL / DB auth 等场景。
+export function getMqttAuth(): { username: string; password: string } {
+  return {
+    username: localStorage.getItem(MQTT_USER_KEY) ?? '',
+    password: localStorage.getItem(MQTT_PASS_KEY) ?? '',
+  }
+}
+
+export function setMqttAuth(username: string, password: string) {
+  if (username) localStorage.setItem(MQTT_USER_KEY, username)
+  else localStorage.removeItem(MQTT_USER_KEY)
+  if (password) localStorage.setItem(MQTT_PASS_KEY, password)
+  else localStorage.removeItem(MQTT_PASS_KEY)
 }
 
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {

@@ -102,6 +102,26 @@ React + Vite 构建的管理控制台已通过 `go:embed` 嵌入 broker 二进�
 - `-webui` 与 `-admin-api` 独立：前者面向人（UI + API 同源），后者面向脚本（纯 API）。
 - 开发模式：`cd web/dashboard && npm run dev`（Vite 已代理 `/api` → `127.0.0.1:6061`）。
 
+### Live 订阅 (MQTT.js over WebSocket)
+
+Dashboard 的 **Live** 页通过 [MQTT.js](https://github.com/mqttjs/MQTT.js) 经 WebSocket 直接订阅 broker 主题，实时查看消息。
+
+```bash
+# 需要开启 WS 与匿名访问 (或用 Live 页的用户名/密码接 SimpleAuth/DB/FileACL)
+./bin/broker -ws :8083 -webui :8080 -allow-anonymous true
+```
+
+由于 dashboard 与 WS 监听在不同端口（跨源），需用 `-ws-allow-origins` 放行 dashboard 的 Origin：
+
+```bash
+./bin/broker -ws :8083 -webui :8080 -allow-anonymous true \
+  -ws-allow-origins 'http://localhost:8080,http://192.168.1.10:8080'
+# 内网简单场景可用 * 放行全部 Origin
+./bin/broker -ws :8083 -webui :8080 -allow-anonymous true -ws-allow-origins '*'
+```
+
+> WS 连接地址默认 `ws://<host>:8083/mqtt`，可在 Settings 中修改；用户名/密码在 Live 页填写并保存在 localStorage。
+
 ## 消息持久化 (SQL 历史消息)
 
 默认 broker 只持久化 retain/session/离线队列，普通 PUBLISH 仅存内存、重启即丢。

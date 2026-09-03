@@ -8,6 +8,7 @@ import { ClientsPage } from '@/pages/clients'
 import { SessionsPage } from '@/pages/sessions'
 import { SubscriptionsPage } from '@/pages/subscriptions'
 import { RetainedPage } from '@/pages/retained'
+import { LivePage } from '@/pages/live'
 import { PublishPage } from '@/pages/publish'
 import { SettingsPage } from '@/pages/settings'
 
@@ -17,6 +18,7 @@ const PAGES: PageKey[] = [
   'sessions',
   'subscriptions',
   'retained',
+  'live',
   'publish',
   'settings',
 ]
@@ -66,6 +68,9 @@ function App() {
       break
     case 'retained':
       content = <RetainedPage />
+      break
+    case 'live':
+      content = <LivePage />
       break
     case 'publish':
       content = <PublishPage />
