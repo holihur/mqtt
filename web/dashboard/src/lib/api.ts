@@ -215,6 +215,23 @@ export interface RetainedMessage {
   payloadB64?: string
 }
 
+export interface AclFile {
+  path: string
+  content: string
+  rules: number
+}
+
+export interface AclSaveResult {
+  rules: number
+}
+
+export interface LogEntry {
+  time: string
+  level: string
+  message: string
+  attrs?: Record<string, unknown>
+}
+
 export interface PublishRequest {
   topic: string
   payload?: string
@@ -266,6 +283,11 @@ export const api = {
   publish: (body: PublishRequest) =>
     request<OkResponse>('/publish', { method: 'POST', body: JSON.stringify(body) }),
   reloadAcl: () => request<OkResponse>('/acl/reload', { method: 'POST' }),
+  aclFile: () => request<AclFile>('/acl/file'),
+  saveAclFile: (content: string) =>
+    request<AclSaveResult>('/acl/file', { method: 'POST', body: JSON.stringify({ content }) }),
+  logs: (limit: number, level?: string) =>
+    request<LogEntry[]>(`/logs?limit=${limit}${level ? `&level=${level}` : ''}`),
 }
 
 // 异步发现 WS 地址：从 /api/v1/info 读取 wsAddr 并缓存；失败时回退默认。
