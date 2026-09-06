@@ -90,7 +90,7 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 	b.mu.RUnlock()
 
 	// Session handling
-	sess, sessionExisted, err := b.getOrCreateSession(pkt)
+	sess, sessionExisted, err := b.getOrCreateSession(clientID, pkt)
 	if err != nil {
 		slog.Error("session error", "err", err)
 		_ = conn.Close()
@@ -177,7 +177,13 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 	// Kick existing connection with same clientID
 	b.mu.Lock()
 	if old, ok := b.conns[clientID]; ok {
+		// 接管: 先摘除旧连接映射, 解锁后再关闭 (conn.Close 会触发
+		// onClientDisconnect, 其内部要拿 b.mu —— 持锁关闭会自死锁)。
+		delete(b.conns, clientID)
+		b.mu.Unlock()
+		old.SetOnClose(nil)
 		_ = old.Close()
+		b.mu.Lock()
 	}
 	b.conns[clientID] = conn
 	b.sessions[clientID] = sess
@@ -250,6 +256,39 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 
 	// Replay retained for existing subs? Not needed until SUBSCRIBE
 
+	// 重发断线时未确认的 inflight 消息 (MQTT 规范: 重连后以 DUP=1 重发 QoS1/2)
+	for pid, e := range sess.InflightSnapshot() {
+		switch e.State {
+		case "qos2-pubrel":
+			pubrel := &codec.Packet{Type: codec.TypePUBREL, Version: pkt.Version, PacketID: pid}
+			if err := b.sendPacket(conn, pubrel); err != nil {
+				slog.Warn("inflight pubrel resend failed", "client", clientID, "err", err)
+			}
+		default:
+			if !b.auth.Authorize(clientID, e.Topic, false) {
+				sess.RemoveInflight(pid)
+				b.cancelRetry(clientID, pid)
+				continue
+			}
+			pub := &codec.Packet{
+				Type:     codec.TypePUBLISH,
+				Version:  pkt.Version,
+				Topic:    e.Topic,
+				QoS:      e.QoS,
+				Payload:  e.Payload,
+				Dup:      true,
+				PacketID: pid,
+			}
+			if err := b.sendPacket(conn, pub); err != nil {
+				slog.Warn("inflight resend failed", "client", clientID, "err", err)
+			} else {
+				e.Dup = true
+				sess.AddInflight(e)
+				b.armRetry(clientID, pid, 1, time.Now().UnixMilli()+retryDelay.Milliseconds())
+			}
+		}
+	}
+
 	// Replay offline queue (filter expired)
 	offline, err := b.store.DequeueOffline(bgCtx(), clientID)
 	if err != nil {
@@ -285,13 +324,12 @@ func (b *Broker) handleRawConn(raw net.Conn) {
 	// Main loop
 	_ = raw.SetReadDeadline(time.Time{}) // clear
 	conn.SetOnClose(func() {
-		b.onClientDisconnect(clientID, sess, false)
+		b.onClientDisconnect(conn, clientID, sess, false)
 	})
 	go b.readLoop(conn, sess)
 }
 
-func (b *Broker) getOrCreateSession(pkt *codec.Packet) (*session.Session, bool, error) {
-	clientID := pkt.ClientID
+func (b *Broker) getOrCreateSession(clientID string, pkt *codec.Packet) (*session.Session, bool, error) {
 	if clientID == "" {
 		return session.NewSession(clientID, pkt.Version, pkt.ConnectFlags.CleanSession, 0), false, nil
 	}
@@ -300,7 +338,14 @@ func (b *Broker) getOrCreateSession(pkt *codec.Packet) (*session.Session, bool, 
 		b.mu.RUnlock()
 		existed := true
 		if pkt.ConnectFlags.CleanSession {
+			// 同步清理 trie 中的旧订阅 (clean 重连后旧订阅不得残留投递)
 			s.Mu.Lock()
+			for f := range s.Subscriptions {
+				b.trie.Remove(f, clientID)
+			}
+			for _, e := range s.Inflight {
+				b.cancelRetry(clientID, e.PacketID)
+			}
 			s.Subscriptions = make(map[string]byte)
 			s.Inflight = make(map[uint16]*session.InflightEntry)
 			s.Mu.Unlock()
@@ -318,7 +363,14 @@ func (b *Broker) getOrCreateSession(pkt *codec.Packet) (*session.Session, bool, 
 	if s != nil {
 		existed := true
 		if pkt.ConnectFlags.CleanSession {
+			// 同步清理 trie 中的旧订阅 (clean 重连后旧订阅不得残留投递)
 			s.Mu.Lock()
+			for f := range s.Subscriptions {
+				b.trie.Remove(f, clientID)
+			}
+			for _, e := range s.Inflight {
+				b.cancelRetry(clientID, e.PacketID)
+			}
 			s.Subscriptions = make(map[string]byte)
 			s.Inflight = make(map[uint16]*session.InflightEntry)
 			s.Mu.Unlock()
@@ -347,7 +399,7 @@ func (b *Broker) readLoop(conn *transport.Conn, sess *session.Session) {
 		}
 		pkt, err := conn.ReadPacket()
 		if err != nil {
-			b.onClientDisconnect(conn.ClientID(), sess, false)
+			b.onClientDisconnect(conn, conn.ClientID(), sess, false)
 			return
 		}
 		b.debugPacket("recv", conn.ClientID(), pkt)
@@ -371,7 +423,7 @@ func (b *Broker) readLoop(conn *transport.Conn, sess *session.Session) {
 			}
 		case codec.TypePUBREL:
 			if e, ok := sess.GetInflight(pkt.PacketID); ok {
-				b.routeMessage(e.Topic, e.Payload, 2, false, nil, sess.ClientID)
+				b.routeMessage(e.Topic, e.Payload, 2, e.Retain, nil, sess.ClientID)
 				sess.RemoveInflight(pkt.PacketID)
 			} else {
 				sess.RemoveInflight(pkt.PacketID)
@@ -386,7 +438,7 @@ func (b *Broker) readLoop(conn *transport.Conn, sess *session.Session) {
 			resp := &codec.Packet{Type: codec.TypePINGRESP, Version: conn.Version()}
 			_ = b.sendPacket(conn, resp)
 		case codec.TypeDISCONNECT:
-			b.onClientDisconnect(conn.ClientID(), sess, true)
+			b.onClientDisconnect(conn, conn.ClientID(), sess, true)
 			return
 		default:
 			slog.Debug("unhandled packet", "type", pkt.Type, "client", conn.ClientID())

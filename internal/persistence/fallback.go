@@ -89,6 +89,9 @@ func (f *FallbackStore) EnqueueOffline(ctx context.Context, clientID string, msg
 func (f *FallbackStore) DequeueOffline(ctx context.Context, clientID string) ([]*Message, error) {
 	msgs, err := f.primary.DequeueOffline(ctx, clientID)
 	if err == nil && len(msgs) > 0 {
+		// 双写架构: 主库出队成功也要同步删除 fallback 里的副本,
+		// 否则后续重连会把旧消息重复投递
+		_ = f.fallback.ClearOffline(ctx, clientID)
 		return msgs, nil
 	}
 	return f.fallback.DequeueOffline(ctx, clientID)

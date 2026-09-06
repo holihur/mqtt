@@ -46,6 +46,8 @@ type Config struct {
 	AdminAddr                 string // 管理 API 监听地址, 空则禁用
 	AdminToken                string // 管理 API Bearer token, 空则仅允许 loopback
 	AdminTLS                  bool   // 管理 API 是否走 TLS (复用 -tls-cert/-tls-key)
+	HTTPPublishAddr           string // 独立 HTTP 发布接口监听地址, 空则禁用
+	HTTPPublishToken          string // HTTP 发布接口 Bearer token, 空则仅允许 loopback
 	WebUIAddr                 string // dashboard 监听地址 (嵌入前端 + /api/v1), 空则禁用
 	ACLFile                   string
 	JWTSecret                 string
@@ -132,6 +134,7 @@ type Broker struct {
 	metricsSrv     *http.Server
 	adminSrv       *http.Server
 	webuiSrv       *http.Server
+	httpPublishSrv *http.Server
 }
 
 // brokerVersion 承载构建期版本信息, 用于管理 API /api/v1/info。
@@ -259,9 +262,15 @@ func (b *Broker) RegisterHook(h hook.Hook) { b.hooks.Register(h) }
 
 func (b *Broker) Hooks() *hook.Manager { return b.hooks }
 
-func (b *Broker) onClientDisconnect(clientID string, sess *session.Session, clean bool) {
+func (b *Broker) onClientDisconnect(conn *transport.Conn, clientID string, sess *session.Session, clean bool) {
 	b.hooks.ExecDisconnect(clientID, clean)
 	b.mu.Lock()
+	// 旧连接被新连接接管后迟到的断开回调: 连接表里已不是自己, 不做任何清理,
+	// 否则会误删新连接的映射并把活跃会话标记为离线。
+	if cur, ok := b.conns[clientID]; !ok || (conn != nil && cur != conn) {
+		b.mu.Unlock()
+		return
+	}
 	delete(b.conns, clientID)
 	b.mu.Unlock()
 	b.removeLimiter(clientID)

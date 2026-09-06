@@ -56,6 +56,8 @@ func main() {
 		adminAPIAddr          = flag.String("admin-api", "", "management API listen addr (empty to disable, e.g. :6061)")
 		adminAPIToken         = flag.String("admin-api-token", "", "management API bearer token (empty: loopback only)")
 		adminAPITLS           = flag.Bool("admin-api-tls", false, "serve management API over TLS (uses -tls-cert/-tls-key)")
+		httpPublishAddr       = flag.String("http-publish", "", "standalone HTTP publish API listen addr (empty to disable, e.g. :6062)")
+		httpPublishToken      = flag.String("http-publish-token", "", "HTTP publish API bearer token (empty: loopback only)")
 		webuiAddr             = flag.String("webui", "", "web dashboard listen addr (empty to disable, e.g. :8080); serves embedded UI + /api/v1")
 		aclFile               = flag.String("acl", "", "ACL file path (empty to disable)")
 		jwtSecret             = flag.String("jwt-secret", "", "JWT HMAC secret (empty to disable)")
@@ -202,6 +204,8 @@ func main() {
 		AdminAddr:             *adminAPIAddr,
 		AdminToken:            *adminAPIToken,
 		AdminTLS:              *adminAPITLS,
+		HTTPPublishAddr:       *httpPublishAddr,
+		HTTPPublishToken:      *httpPublishToken,
 		WebUIAddr:             *webuiAddr,
 		ACLFile:               *aclFile,
 		JWTSecret:             *jwtSecret,

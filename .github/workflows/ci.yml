@@ -75,6 +75,9 @@ jobs:
       - name: Test cluster
         run: go test -race -count=1 -run TestCluster -v ./internal/broker
 
+      - name: Paho interop suite
+        run: task interop
+
       - name: Bench smoke
         run: go test -run=^$ -bench=. ./... -benchmem -benchtime=1x 2>&1 | head -n 40
 

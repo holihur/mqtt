@@ -16,6 +16,7 @@ import (
 	"mqtt/internal/persistence"
 	"mqtt/internal/transport"
 	"net/http"
+	_ "net/http/pprof"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
@@ -141,12 +142,27 @@ func (b *Broker) initStart(ctx context.Context) (context.Context, error) {
 		mux.Handle("/metrics", promhttp.Handler())
 		mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200); _, _ = w.Write([]byte("ok")) })
 		mux.HandleFunc("/readyz", b.readyzHandler)
+		mux.Handle("/debug/pprof/", http.DefaultServeMux)
 		srv := &http.Server{Addr: b.cfg.PprofAddr, Handler: mux}
 		b.metricsSrv = srv
 		go func() {
 			_ = srv.ListenAndServe()
 		}()
 		slog.Info("metrics listening", "addr", b.cfg.PprofAddr)
+		go func() {
+			<-runCtx.Done()
+			shutCtx, shutCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer shutCancel()
+			_ = srv.Shutdown(shutCtx)
+		}()
+	}
+	if b.cfg.HTTPPublishAddr != "" {
+		srv := &http.Server{Addr: b.cfg.HTTPPublishAddr, Handler: b.httpPublishHandler()}
+		b.httpPublishSrv = srv
+		go func() {
+			_ = srv.ListenAndServe()
+		}()
+		slog.Info("http publish api listening", "addr", b.cfg.HTTPPublishAddr, "tokenSet", b.cfg.HTTPPublishToken != "")
 		go func() {
 			<-runCtx.Done()
 			shutCtx, shutCancel := context.WithTimeout(context.Background(), 2*time.Second)

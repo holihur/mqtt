@@ -39,6 +39,12 @@ tasks:
       - cmd: which golangci-lint >/dev/null 2>&1 && golangci-lint run ./... || true
         ignore_error: true
 
+  interop:
+    desc: Eclipse Paho MQTT 互操作测试 (纯 go build, 不重建 webui)
+    cmds:
+      - "{{.GO}} build -o bin/broker ./cmd/broker"
+      - tests/interop/run.sh bin/broker 18890
+
   test:
     desc: 运行测试 (race)
     cmds:

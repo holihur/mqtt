@@ -1223,7 +1223,7 @@ func TestGetOrCreateSessionFromStore(t *testing.T) {
 		ClientID:     "stored-client",
 		ConnectFlags: codec.ConnectFlags{CleanSession: false},
 	}
-	s, existed, err := b.getOrCreateSession(pkt)
+	s, existed, err := b.getOrCreateSession(pkt.ClientID, pkt)
 	if err != nil {
 		t.Fatalf("getOrCreateSession: %v", err)
 	}
@@ -1248,7 +1248,7 @@ func TestGetOrCreateSessionFromStoreClean(t *testing.T) {
 		ClientID:     "clean-client",
 		ConnectFlags: codec.ConnectFlags{CleanSession: true},
 	}
-	s, existed, err := b.getOrCreateSession(pkt)
+	s, existed, err := b.getOrCreateSession(pkt.ClientID, pkt)
 	if err != nil {
 		t.Fatalf("getOrCreateSession: %v", err)
 	}
@@ -1272,7 +1272,7 @@ func TestGetOrCreateSessionNew(t *testing.T) {
 		ClientID:     "new-client",
 		ConnectFlags: codec.ConnectFlags{CleanSession: true},
 	}
-	s, existed, err := b.getOrCreateSession(pkt)
+	s, existed, err := b.getOrCreateSession(pkt.ClientID, pkt)
 	if err != nil {
 		t.Fatalf("getOrCreateSession: %v", err)
 	}
@@ -1292,7 +1292,7 @@ func TestGetOrCreateSessionEmptyClientID(t *testing.T) {
 		ClientID:     "",
 		ConnectFlags: codec.ConnectFlags{CleanSession: true},
 	}
-	s, existed, err := b.getOrCreateSession(pkt)
+	s, existed, err := b.getOrCreateSession(pkt.ClientID, pkt)
 	if err != nil {
 		t.Fatalf("getOrCreateSession: %v", err)
 	}
@@ -1314,7 +1314,7 @@ func TestGetOrCreateSessionV5WithExpiry(t *testing.T) {
 		ConnectFlags: codec.ConnectFlags{CleanSession: true},
 		Properties:   &codec.Properties{SessionExpiryInterval: &exp},
 	}
-	s, _, err := b.getOrCreateSession(pkt)
+	s, _, err := b.getOrCreateSession(pkt.ClientID, pkt)
 	if err != nil {
 		t.Fatalf("getOrCreateSession: %v", err)
 	}
@@ -1332,7 +1332,7 @@ func TestOnClientDisconnectNilSession(t *testing.T) {
 	b.mu.Lock()
 	b.conns["disc-nil"] = nil
 	b.mu.Unlock()
-	b.onClientDisconnect("disc-nil", nil, false)
+	b.onClientDisconnect(nil, "disc-nil", nil, false)
 	b.mu.RLock()
 	_, ok := b.conns["disc-nil"]
 	b.mu.RUnlock()
@@ -1351,7 +1351,7 @@ func TestOnClientDisconnectCleanSession(t *testing.T) {
 	b.mu.Unlock()
 	b.trie.Add("test/#", "disc-clean", 0, false)
 
-	b.onClientDisconnect("disc-clean", sess, true)
+	b.onClientDisconnect(nil, "disc-clean", sess, true)
 	b.mu.RLock()
 	_, ok := b.conns["disc-clean"]
 	b.mu.RUnlock()
@@ -1369,7 +1369,7 @@ func TestOnClientDisconnectPersistentSession(t *testing.T) {
 	b.sessions["disc-persist"] = sess
 	b.mu.Unlock()
 
-	b.onClientDisconnect("disc-persist", sess, false)
+	b.onClientDisconnect(nil, "disc-persist", sess, false)
 	sess.Mu.Lock()
 	connected := sess.Connected
 	sess.Mu.Unlock()

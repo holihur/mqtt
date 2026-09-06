@@ -61,6 +61,7 @@ type InflightEntry struct {
 	State     string // "qos1-pending", "qos2-publish", "qos2-pubrel"
 	CreatedAt time.Time
 	Dup       bool
+	Retain    bool // 入站 QoS2 PUBLISH 的 retain 标志 (PUBREL 路由用)
 }
 
 func NewSession(clientID string, version byte, cleanStart bool, expiry uint32) *Session {
@@ -207,6 +208,18 @@ func (s *Session) GetInflight(id uint16) (*InflightEntry, bool) {
 	return e, ok
 }
 func (s *Session) InflightCount() int { s.Mu.Lock(); defer s.Mu.Unlock(); return len(s.Inflight) }
+
+// InflightSnapshot 返回 inflight 表的快照 (重连重发用)。
+func (s *Session) InflightSnapshot() map[uint16]*InflightEntry {
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+	out := make(map[uint16]*InflightEntry, len(s.Inflight))
+	for id, e := range s.Inflight {
+		ce := *e
+		out[id] = &ce
+	}
+	return out
+}
 func (s *Session) CanSend() bool {
 	s.Mu.Lock()
 	defer s.Mu.Unlock()

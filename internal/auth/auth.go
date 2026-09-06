@@ -150,9 +150,11 @@ func NewFileACL(path string) (*FileACL, error) {
 					r.Topic = parts[i+1]
 					i++
 				}
-			case "read", "write", "readwrite":
-				r.Access = parts[i]
-			}
+		case "read", "write", "readwrite":
+			r.Access = parts[i]
+		case "deny":
+			r.Access = "deny"
+		}
 		}
 		if r.Topic != "" {
 			if r.Access == "" {
@@ -203,7 +205,24 @@ func (f *FileACL) Authorize(clientID, topic string, isPublish bool) bool {
 	if len(f.rules) == 0 {
 		return true
 	}
+	// deny 规则优先: 命中即拒绝
 	for _, r := range f.rules {
+		if r.Access != "deny" {
+			continue
+		}
+		if r.ClientID != "" && r.ClientID != clientID {
+			continue
+		}
+		if r.Topic == "#" || r.Topic == topic || topicHasPrefix(topic, r.Topic) || matchMqttFilter(topic, r.Topic) {
+			return false
+		}
+	}
+	hasAllow := false
+	for _, r := range f.rules {
+		if r.Access == "deny" {
+			continue
+		}
+		hasAllow = true
 		if r.ClientID != "" && r.ClientID != clientID {
 			continue
 		}
@@ -219,7 +238,8 @@ func (f *FileACL) Authorize(clientID, topic string, isPublish bool) bool {
 			return true
 		}
 	}
-	return false
+	// 只有 deny 规则时, 未被 deny 的主题默认放行
+	return !hasAllow
 }
 
 func matchMqttFilter(topic, filter string) bool {

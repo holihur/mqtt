@@ -70,6 +70,16 @@ func (b *Broker) handleSubscribe(conn *transport.Conn, sess *session.Session, pk
 			}
 			continue
 		}
+		// ACL 授权检查: 未授权的订阅返回失败码且不注册订阅
+		if b.auth != nil && !b.auth.Authorize(sess.ClientID, sub.Filter, false) {
+			mqttPacketDropped.WithLabelValues("subscribe_acl").Inc()
+			if sess.Version == codec.ProtocolV5 {
+				codes = append(codes, 0x87)
+			} else {
+				codes = append(codes, 0x80)
+			}
+			continue
+		}
 		if isShared, group, realFilter := isSharedFilter(sub.Filter); isShared {
 			if isSysFilter(realFilter) {
 				mqttPacketDropped.WithLabelValues("sys_sub_denied").Inc()
@@ -167,6 +177,8 @@ func (b *Broker) handleSubscribe(conn *transport.Conn, sess *session.Session, pk
 					}
 					if pub.QoS > 0 {
 						pub.PacketID = sess.NextPacketID()
+						sess.AddInflight(&session.InflightEntry{PacketID: pub.PacketID, QoS: pub.QoS, Topic: m.Topic, Payload: m.Payload})
+						b.scheduleRetry(sess.ClientID, pub.PacketID, 0)
 					}
 				} else {
 					pub.QoS = 0

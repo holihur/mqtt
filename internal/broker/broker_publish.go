@@ -202,18 +202,6 @@ func (b *Broker) handlePublish(conn *transport.Conn, sess *session.Session, pkt 
 		return
 	}
 	// QoS2 inbound: need to send PUBREC and store, route after PUBREL
-	if pkt.QoS == 2 {
-		if _, exists := sess.GetInflight(pkt.PacketID); exists {
-			rec := &codec.Packet{Type: codec.TypePUBREC, Version: conn.Version(), PacketID: pkt.PacketID}
-			_ = b.sendPacket(conn, rec)
-			return
-		}
-		sess.AddInflight(&session.InflightEntry{PacketID: pkt.PacketID, QoS: 2, Topic: topicName, Payload: pkt.Payload, State: "qos2-publish"})
-		rec := &codec.Packet{Type: codec.TypePUBREC, Version: conn.Version(), PacketID: pkt.PacketID}
-		_ = b.sendPacket(conn, rec)
-		return
-	}
-
 	var msgExpiry uint32
 	var msgCreatedAt int64
 	if pkt.PubProps != nil && pkt.PubProps.MessageExpiryInterval != nil {
@@ -223,6 +211,28 @@ func (b *Broker) handlePublish(conn *transport.Conn, sess *session.Session, pkt 
 			mqttPacketDropped.WithLabelValues("message_expiry").Inc()
 		}
 	}
+	if pkt.QoS == 2 {
+		if _, exists := sess.GetInflight(pkt.PacketID); exists {
+			rec := &codec.Packet{Type: codec.TypePUBREC, Version: conn.Version(), PacketID: pkt.PacketID}
+			_ = b.sendPacket(conn, rec)
+			return
+		}
+		// 保留消息必须在收到 PUBLISH 时就落库 (MQTT 规范: retain 处理不等待 PUBREL)
+		if pkt.Retain {
+			if len(pkt.Payload) == 0 {
+				if err := b.store.DeleteRetained(bgCtx(), topicName); err != nil {
+					slog.Warn("store DeleteRetained failed", "err", err)
+				}
+			} else {
+				b.saveRetained(topicName, pkt.Payload, pkt.QoS, msgExpiry, msgCreatedAt)
+			}
+		}
+		sess.AddInflight(&session.InflightEntry{PacketID: pkt.PacketID, QoS: 2, Topic: topicName, Payload: pkt.Payload, State: "qos2-publish", Retain: pkt.Retain})
+		rec := &codec.Packet{Type: codec.TypePUBREC, Version: conn.Version(), PacketID: pkt.PacketID}
+		_ = b.sendPacket(conn, rec)
+		return
+	}
+
 	// Retain handling with quota and expiry
 	if pkt.Retain {
 		if len(pkt.Payload) == 0 {
@@ -243,15 +253,7 @@ func (b *Broker) handlePublish(conn *transport.Conn, sess *session.Session, pkt 
 				}
 				return
 			}
-			msg := &persistence.Message{Topic: topicName, Payload: pkt.Payload, QoS: pkt.QoS, Retain: true, CreatedAt: msgCreatedAt, ExpiryInterval: msgExpiry}
-			if err := b.store.SaveRetained(bgCtx(), topicName, msg); err != nil {
-				slog.Warn("store SaveRetained failed", "err", err)
-			} else if msgExpiry > 0 {
-				topicCopy := topicName
-				time.AfterFunc(time.Duration(msgExpiry)*time.Second, func() {
-					_ = b.store.DeleteRetained(context.Background(), topicCopy)
-				})
-			}
+			b.saveRetained(topicName, pkt.Payload, pkt.QoS, msgExpiry, msgCreatedAt)
 		}
 	}
 
@@ -440,7 +442,7 @@ func (b *Broker) deliverLocal(topicName string, payload []byte, qos byte, retain
 		mqttInflight.Set(float64(sess.InflightCount()))
 		_ = b.sendPacket(conn, pub)
 	}
-	subs := b.trie.Match(topicName)
+	subs := dedupeSubsByClient(b.trie.Match(topicName), from)
 	// 广播快速路径: 无 hook 消费包 hex、无逐订阅者 v5 属性、且 retain 不参与时，
 	// QoS0 投递帧对所有匹配订阅者逐字节相同 —— 按线族 (v3.x / v5) 各 Encode
 	// 一次后共享写入，避免每个订阅者重复 Encode + 分配。
@@ -716,4 +718,45 @@ func (b *Broker) scheduleRetry(clientID string, packetID uint16, retries int) {
 		slog.Warn("store SavePendingRetry failed", "client", clientID, "packetID", packetID, "err", err)
 	}
 	b.armRetry(clientID, packetID, retries, nextAt)
+}
+
+// dedupeSubsByClient 合并同一客户端的重叠订阅：MQTT 规范要求每个客户端对一条
+// 消息只收到一次 PUBLISH，QoS 取所有匹配订阅中的最大值。
+func dedupeSubsByClient(subs []*topic.SubEntry, from string) []*topic.SubEntry {
+	if len(subs) <= 1 {
+		return subs
+	}
+	idx := make(map[string]int, len(subs))
+	out := make([]*topic.SubEntry, 0, len(subs))
+	for _, s := range subs {
+		if i, ok := idx[s.ClientID]; ok {
+			if s.QoS > out[i].QoS {
+				out[i].QoS = s.QoS
+			}
+			if s.NoLocal {
+				out[i].NoLocal = true
+			}
+			// 保留最具体 (最长) 的 filter，供 RAP 等 per-subscription 选项查询
+			if len(s.Filter) > len(out[i].Filter) {
+				out[i].Filter = s.Filter
+			}
+		} else {
+			idx[s.ClientID] = len(out)
+			out = append(out, &topic.SubEntry{ClientID: s.ClientID, Filter: s.Filter, QoS: s.QoS, NoLocal: s.NoLocal})
+		}
+	}
+	return out
+}
+
+// saveRetained 写入保留消息并安排过期删除。
+func (b *Broker) saveRetained(topicName string, payload []byte, qos byte, msgExpiry uint32, msgCreatedAt int64) {
+	msg := &persistence.Message{Topic: topicName, Payload: payload, QoS: qos, Retain: true, CreatedAt: msgCreatedAt, ExpiryInterval: msgExpiry}
+	if err := b.store.SaveRetained(bgCtx(), topicName, msg); err != nil {
+		slog.Warn("store SaveRetained failed", "err", err)
+	} else if msgExpiry > 0 {
+		topicCopy := topicName
+		time.AfterFunc(time.Duration(msgExpiry)*time.Second, func() {
+			_ = b.store.DeleteRetained(context.Background(), topicCopy)
+		})
+	}
 }
