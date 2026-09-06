@@ -55,6 +55,17 @@ tasks:
     cmds:
       - "{{.GO}} test -race -count=1 -v ./..."
 
+  blackbox:
+    desc: 运行 Python 黑盒测试 (需先 build)
+    deps: [build]
+    cmds:
+      - "python3 -m pytest tests/blackbox -v"
+
+  blackbox-install:
+    desc: 安装黑盒测试依赖
+    cmds:
+      - "pip3 install -r tests/blackbox/requirements.txt"
+
   run:
     desc: 编译并以 Redis 模式运行
     deps: [build]
