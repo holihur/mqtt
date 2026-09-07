@@ -369,15 +369,26 @@ func (b *Broker) handleWill(sess *session.Session) {
 		if err := b.store.SavePendingWill(bgCtx(), pw); err != nil {
 			slog.Warn("store SavePendingWill failed", "client", clientID, "err", err)
 		}
-		topic := w.Topic
-		payload := w.Payload
-		q := w.QoS
-		ret := w.Retain
 		b.armWillTimer(clientID, time.Duration(w.DelayInterval)*time.Second, func() {
 			_ = b.store.DeletePendingWill(bgCtx(), clientID)
-			b.routeMessage(topic, payload, q, ret, nil, clientID)
+			b.publishWill(w, clientID)
 		})
 		return
+	}
+	b.publishWill(w, clientID)
+}
+
+// publishWill 投递遗嘱消息；retain=true 时先落库为保留消息，
+// 保证新订阅者后续能拉到 (MQTT3.1.1 §3.1.2.5 / MQTT5 §3.1.3.2.2)。
+func (b *Broker) publishWill(w *session.Will, clientID string) {
+	if w.Retain {
+		if exceeded, reason := b.checkRetainQuota(w.Topic, w.Payload); exceeded {
+			slog.Warn("retain quota exceeded for will", "reason", reason, "topic", w.Topic, "client", clientID)
+			mqttRetainQuotaExceeded.WithLabelValues(reason).Inc()
+			mqttPacketDropped.WithLabelValues("retain_quota").Inc()
+		} else {
+			b.saveRetained(w.Topic, w.Payload, w.QoS, 0, time.Now().UnixMilli())
+		}
 	}
 	b.routeMessage(w.Topic, w.Payload, w.QoS, w.Retain, nil, clientID)
 }
@@ -422,12 +433,12 @@ func (b *Broker) restorePendingWills() {
 		delay := ww.DeliverAt - now
 		if delay <= 0 {
 			_ = b.store.DeletePendingWill(bgCtx(), ww.ClientID)
-			b.routeMessage(ww.Topic, ww.Payload, ww.QoS, ww.Retain, nil, ww.ClientID)
+			b.publishWill(&session.Will{Topic: ww.Topic, Payload: ww.Payload, QoS: ww.QoS, Retain: ww.Retain}, ww.ClientID)
 			continue
 		}
 		b.armWillTimer(ww.ClientID, time.Duration(delay)*time.Millisecond, func() {
 			_ = b.store.DeletePendingWill(bgCtx(), ww.ClientID)
-			b.routeMessage(ww.Topic, ww.Payload, ww.QoS, ww.Retain, nil, ww.ClientID)
+			b.publishWill(&session.Will{Topic: ww.Topic, Payload: ww.Payload, QoS: ww.QoS, Retain: ww.Retain}, ww.ClientID)
 		})
 	}
 	if len(wills) > 0 {

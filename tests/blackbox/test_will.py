@@ -247,7 +247,27 @@ class TestWill:
         sub.disconnect()
         sub.loop_stop()
 
-        # The will should be delivered (retain flag handling is broker-specific)
+        # The will should be delivered; per MQTT spec the live delivery
+        # carries Retain=0 (Retain=1 is only for new-subscriber retained
+        # delivery), matching mosquitto's behavior.
         will_msgs = [m for m in msgs if m[0] == will_topic]
         assert len(will_msgs) >= 1
         assert will_msgs[0][1] == b"retained-will"
+
+        # A new subscriber should receive the will as a retained message
+        collector2 = MessageCollector()
+        sub2 = make_client(
+            broker_anon.config.tcp_port,
+            client_id=f"wret-sub2-{uid}",
+            on_message=collector2.on_message,
+        )
+        sub2.subscribe(will_topic, qos=1)
+        sub2.loop_start()
+        msgs2 = collector2.wait(count=1, timeout=5)
+        sub2.disconnect()
+        sub2.loop_stop()
+
+        retained = [m for m in msgs2 if m[0] == will_topic]
+        assert len(retained) >= 1
+        assert retained[0][1] == b"retained-will"
+        assert retained[0][2] is True

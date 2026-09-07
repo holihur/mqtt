@@ -150,11 +150,11 @@ func NewFileACL(path string) (*FileACL, error) {
 					r.Topic = parts[i+1]
 					i++
 				}
-		case "read", "write", "readwrite":
-			r.Access = parts[i]
-		case "deny":
-			r.Access = "deny"
-		}
+			case "read", "write", "readwrite":
+				r.Access = parts[i]
+			case "deny":
+				r.Access = "deny"
+			}
 		}
 		if r.Topic != "" {
 			if r.Access == "" {
