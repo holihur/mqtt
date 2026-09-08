@@ -46,6 +46,8 @@ type Config struct {
 	AdminAddr                 string // 管理 API 监听地址, 空则禁用
 	AdminToken                string // 管理 API Bearer token, 空则仅允许 loopback
 	AdminTLS                  bool   // 管理 API 是否走 TLS (复用 -tls-cert/-tls-key)
+	MCPEnabled                bool   // 是否启用 MCP 服务端 (/mcp), 需在 admin 或 webui 监听上
+	MCPToken                  string // MCP 授权 key, 空则仅允许 loopback; 与 AdminToken 互相独立
 	HTTPPublishAddr           string // 独立 HTTP 发布接口监听地址, 空则禁用
 	HTTPPublishToken          string // HTTP 发布接口 Bearer token, 空则仅允许 loopback
 	WebUIAddr                 string // dashboard 监听地址 (嵌入前端 + /api/v1), 空则禁用

@@ -72,6 +72,9 @@ curl -H 'Authorization: Bearer change-me' http://127.0.0.1:6061/api/v1/info
 | POST | `/api/v1/publish` | 发布消息 |
 | GET | `/api/v1/nodes` | 集群节点列表 |
 | POST | `/api/v1/acl/reload` | 热加载 FileACL（无 FileACL 返回 400） |
+| GET | `/api/v1/openapi.json` | OpenAPI 3.0 spec（公开，无需鉴权） |
+| GET | `/swagger` | Swagger UI（公开，浏览器打开调试 API） |
+| POST | `/mcp` | MCP (Model Context Protocol) 入口，独立授权 key，见 [mcp.md](mcp.md) |
 
 > 集群模式下 `/clients`、`/sessions`、`/subscriptions` 仅反映**本节点**内存状态；
 > `/nodes` 通过 Redis 心跳键列出全部在线节点。

@@ -161,16 +161,59 @@ func (s *adminServer) handler() http.Handler {
 // combinedHandler 在 /api/ 下挂载鉴权后的管理 API，其余路径服务嵌入的
 // dashboard 静态资源（静态资源公开，API 仍遵循 Bearer/loopback 鉴权）。
 // 供 -webui 监听端口使用，使 dashboard 与 API 同源、开箱即用。
+// /mcp (MCP 入口, 独立授权 key) 与 /swagger、openapi.json (公开文档) 在此一并路由。
 func (s *adminServer) combinedHandler() http.Handler {
 	api := s.handler()
+	mcp := s.b.newMCPServer().handler()
 	web := webui.Handler()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/mcp" {
+			if !s.b.cfg.MCPEnabled {
+				http.NotFound(w, r)
+				return
+			}
+			mcp.ServeHTTP(w, r)
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			api.ServeHTTP(w, r)
 			return
 		}
 		web.ServeHTTP(w, r)
 	})
+}
+
+// rootHandler 是 admin 监听端口使用的完整路由：/mcp → MCP (独立鉴权)，
+// /swagger 与 /api/v1/openapi.json → 公开文档，其余 /api/v1/* → 鉴权后的 API。
+func (s *adminServer) rootHandler() http.Handler {
+	api := s.handler() // 已含鉴权
+	mux := http.NewServeMux()
+	s.registerSwagger(mux)
+	openAPI := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeRawJSON(w, openAPISpec())
+	})
+	mcp := s.b.newMCPServer().handler()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/mcp":
+			if !s.b.cfg.MCPEnabled {
+				http.NotFound(w, r)
+				return
+			}
+			mcp.ServeHTTP(w, r)
+		case "/api/v1/openapi.json":
+			openAPI.ServeHTTP(w, r)
+		case "/swagger", "/swagger/":
+			mux.ServeHTTP(w, r)
+		default:
+			api.ServeHTTP(w, r)
+		}
+	})
+}
+
+func writeRawJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 func (s *adminServer) mux() *http.ServeMux {

@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { Send } from 'lucide-react'
 
 import { api } from '@/lib/api'
+import { usePersistedState } from '@/hooks/use-persisted-state'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -12,10 +13,11 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
 export function PublishPage() {
   const { t } = useTranslation()
-  const [topic, setTopic] = useState('')
-  const [payload, setPayload] = useState('')
-  const [qos, setQos] = useState(0)
-  const [retain, setRetain] = useState(false)
+  // persist form state so it survives page switches and reloads
+  const [topic, setTopic] = usePersistedState<string>('publish.topic', '')
+  const [payload, setPayload] = usePersistedState<string>('publish.payload', '')
+  const [qos, setQos] = usePersistedState<number>('publish.qos', 0)
+  const [retain, setRetain] = usePersistedState<boolean>('publish.retain', false)
   const [busy, setBusy] = useState(false)
 
   async function onSubmit(e: FormEvent) {

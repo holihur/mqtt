@@ -173,7 +173,7 @@ func (b *Broker) initStart(ctx context.Context) (context.Context, error) {
 	if b.cfg.AdminAddr != "" || b.cfg.WebUIAddr != "" {
 		adm := b.newAdminServer()
 		if b.cfg.AdminAddr != "" {
-			srv := &http.Server{Addr: b.cfg.AdminAddr, Handler: adm.handler()}
+			srv := &http.Server{Addr: b.cfg.AdminAddr, Handler: adm.rootHandler()}
 			b.adminSrv = srv
 			go func() {
 				if b.cfg.AdminTLS {

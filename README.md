@@ -82,10 +82,13 @@ WebSocket: `ws://localhost:8083/mqtt`
 - -admin-api-token <t>    管理 API Bearer token (空则仅允许 loopback)
 - -admin-api-tls          管理 API 走 TLS (复用 -tls-cert/-tls-key)
 - -webui :8080            内嵌 dashboard 监听地址 (空则禁用, 同端口提供 /api/v1)
+- -mcp                    启用 MCP 服务端 (/mcp, 需 admin 或 webui 监听)
+- -mcp-token <t>          MCP 授权 key (空则仅允许 loopback, 与 admin token 独立)
 - -node  <id>            节点 ID
 ```
 
 管理 API 提供客户端/会话/订阅/retain 查看与操作、消息发布、ACL 热加载，详见 [`docs/admin.md`](docs/admin.md)。
+API 附带 OpenAPI 文档（`/api/v1/openapi.json` + `/swagger`）；亦可通过 MCP 让 AI 客户端直接操作 broker，详见 [`docs/mcp.md`](docs/mcp.md)。
 
 ## Web Dashboard (内嵌)
 

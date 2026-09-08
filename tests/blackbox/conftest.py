@@ -93,7 +93,9 @@ class BrokerConfig:
         args += ["-allow-anonymous", str(self.allow_anonymous).lower()]
         args += ["-log-level", self.log_level]
         args += ["-redis", ""]
-        args += ["-wal", str(self.wal_enabled).lower()]
+        # NOTE: Go bool flags must use `-wal=false` (no space); with a space,
+        # "false" is treated as a positional arg and flag parsing stops early.
+        args += [f"-wal={'true' if self.wal_enabled else 'false'}"]
         args += ["-wal-dir", "-"]
         if self.node_id:
             args += ["-node", self.node_id]

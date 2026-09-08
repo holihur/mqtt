@@ -157,6 +157,10 @@ func decodeVersioned(frame []byte, version byte) (*Packet, error) {
 		if p.QoS > 2 {
 			return nil, ErrInvalidQoS
 		}
+		if p.Dup && p.QoS == 0 {
+			// MQTT-3.3.1-2: DUP MUST be 0 for QoS 0 delivery
+			return nil, ErrProtocolViolation
+		}
 		if err := decodePublish(p, payload); err != nil {
 			return nil, err
 		}
