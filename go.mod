@@ -1,6 +1,6 @@
 module mqtt
 
-go 1.25.11
+go 1.26.0
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
@@ -14,7 +14,7 @@ require (
 	github.com/prometheus/client_golang v1.24.1
 	github.com/redis/go-redis/v9 v9.22.0
 	go.uber.org/goleak v1.3.0
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.56.0
 	modernc.org/sqlite v1.58.0
 )
 
