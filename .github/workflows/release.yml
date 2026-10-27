@@ -23,12 +23,17 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "12.15.0"
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/dashboard/package-lock.json
+          node-version: "26.12.1"
+          cache: pnpm
+          cache-dependency-path: web/dashboard/pnpm-lock.yaml
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3

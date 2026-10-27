@@ -9,8 +9,8 @@ tasks:
     desc: 构建并嵌入 dashboard 前端 (产物嵌入 internal/webui/dist 供 go:embed)
     dir: web/dashboard
     cmds:
-      - cmd: test -d node_modules || npm ci --no-audit --no-fund
-      - npm run build
+      - cmd: test -d node_modules || pnpm install --frozen-lockfile
+      - pnpm run build
       - |
         rm -rf "{{.ROOT_DIR}}/internal/webui/dist"
         mkdir -p "{{.ROOT_DIR}}/internal/webui/dist"
