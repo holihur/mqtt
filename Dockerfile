@@ -1,13 +1,14 @@
 # 阶段 1: 构建 dashboard 前端
-FROM node:24-alpine AS webui
+FROM node:26-alpine AS webui
 WORKDIR /app
-COPY web/dashboard/package.json web/dashboard/package-lock.json ./
-RUN npm ci --no-audit --no-fund
+RUN npm install -g pnpm@12.15.0
+COPY web/dashboard/package.json web/dashboard/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
 COPY web/dashboard/ ./
-RUN npm run build
+RUN pnpm run build
 
 # 阶段 2: 编译 broker，嵌入前端产物
-FROM golang:1.25-alpine AS builder
+FROM golang:1.27-alpine AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
