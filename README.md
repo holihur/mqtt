@@ -260,18 +260,18 @@ defer func() { _ = mh.Close(); _ = client.Disconnect(ctx) }()
 
 ## 基准与压测（CI 自动更新）
 <!-- BENCH_START -->
-> 更新: 2026-11-11 15:31 UTC | goos: linux goarch: amd64 | cpu: AMD EPYC 9V74 80-Core Processor                
+> 更新: 2026-11-11 21:27 UTC | goos: linux goarch: amd64 | cpu: AMD EPYC 9V74 80-Core Processor                
 >
 > ```
 > goos: linux
 goarch: amd64
 cpu: AMD EPYC 9V74 80-Core Processor                
-Benchmark10kClients-4          	       1	    373771 ns/op	   17960 B/op	      82 allocs/op
-BenchmarkPublishThroughput-4   	       1	     18968 ns/op	     240 B/op	       7 allocs/op
+Benchmark10kClients-4          	       1	    362249 ns/op	   17912 B/op	      79 allocs/op
+BenchmarkPublishThroughput-4   	       1	     15003 ns/op	      64 B/op	       3 allocs/op
 > ```
 >
-> - Benchmark10kClients-4 1 373771 ns/op 17960 B/op 82 allocs/op
-> - BenchmarkPublishThroughput-4 1 18968 ns/op 240 B/op 7 allocs/op
+> - Benchmark10kClients-4 1 362249 ns/op 17912 B/op 79 allocs/op
+> - BenchmarkPublishThroughput-4 1 15003 ns/op 64 B/op 3 allocs/op
 > - 详见 [`docs/bench.md`](docs/bench.md) 与 Artifacts `bench.txt`/`c10k.txt`
 
 <!-- BENCH_END -->
