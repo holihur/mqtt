@@ -2,7 +2,7 @@
 FROM node:26.12.1-alpine AS webui
 WORKDIR /app
 RUN npm install -g pnpm@12.15.0
-COPY web/dashboard/package.json web/dashboard/pnpm-lock.yaml ./
+COPY web/dashboard/package.json web/dashboard/pnpm-lock.yaml web/dashboard/pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY web/dashboard/ ./
 RUN pnpm run build
