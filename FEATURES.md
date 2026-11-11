@@ -119,6 +119,7 @@
 | 特性 | 说明 |
 |---|---|
 | 配置 | 旗标：`-tcp/-ws/-redis/-pprof/-node/-acl/-jwt-secret/-allow-anonymous/-log-level/-tls-cert/-tls-key/-tls-ca` |
+| 消息持久化 | `-msg-persist-dsn` 异步批量写 MySQL / PostgreSQL / SQLite / MongoDB；SQL 多行 INSERT，MongoDB `InsertMany`，失败 at-most-once 丢弃并计数 |
 | 一键开发 | `task dev` 拉起 `redis + broker :1883/:8083/:6060`，`task dev-down/logs/bench/fuzz/c10k` |
 | 容器 | `Dockerfile golang:1.25-alpine → alpine:3.22`，`docker-compose` 双 `broker1/2 + redis + prometheus` |
 | CI | `build / Test(race) / Bench smoke / Fuzz 3s / Govulncheck / Bench report → README BENCH_* / mosquitto clients / c10k 10k/60s` |

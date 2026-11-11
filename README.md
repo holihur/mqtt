@@ -129,31 +129,69 @@ Dashboard 会自动从 `/api/v1/info` 读取 broker 配置的 WS 监听地址并
 > WS 连接地址优先级：Settings 手动配置 > 从 `/api/v1/info` 自动发现 > 默认 `ws://<host>:8083/mqtt`。
 > 用户名/密码在 Live 页填写并保存在 localStorage。
 
-## 消息持久化 (SQL 历史消息)
+## 消息持久化 (MySQL / PostgreSQL / SQLite / MongoDB)
 
 默认 broker 只持久化 retain/session/离线队列，普通 PUBLISH 仅存内存、重启即丢。
-可通过 hook 将**全部 PUBLISH 异步批量写入 SQL**（PostgreSQL / MySQL / SQLite），
-用于历史查询、审计、BI 分析。
+可通过 hook 将**全部 PUBLISH 异步批量写入数据库**，用于历史查询、审计、BI 分析。
 
 ```bash
 # SQLite (文件路径)
 ./bin/broker -msg-persist-dsn ./data/mqtt_messages.db
 
-# PostgreSQL (需先建表，见下方 DDL；hook 自动用 $1..$7 占位符)
+# MySQL (支持 mysql:// URL，也支持原生 go-sql-driver DSN)
+./bin/broker -msg-persist-dsn "mysql://user:pass@127.0.0.1:3306/mqtt?charset=utf8mb4" \
+  -msg-persist-batch-size 1000 -msg-persist-flush-interval 5s
+
+# 或原生 DSN
+./bin/broker -msg-persist-dsn "user:pass@tcp(127.0.0.1:3306)/mqtt?charset=utf8mb4"
+
+# PostgreSQL (需先建表，见下方 DDL)
 ./bin/broker -msg-persist-dsn "postgres://user:pass@localhost/mqtt?sslmode=disable" \
   -msg-persist-batch-size 1000 -msg-persist-flush-interval 5s
 
-# 可选参数
--msg-persist-table <表名>            默认 mqtt_messages
--msg-persist-batch-size <n>          每批条数, 默认 1000
--msg-persist-flush-interval <d>      最大积压时间, 默认 5s
--msg-persist-queue-capacity <n>      内存队列容量, 默认 10000
--msg-persist-drop-policy drop|block  队列满策略, 默认 drop (不阻塞发布路径)
--msg-persist-skip-retain             跳过 retain 消息
--msg-persist-node-id <id>            落库节点 ID (默认取 -node)
+# MongoDB (数据库名默认取 URI path，没有则用 mqtt；集合默认 mqtt_messages)
+./bin/broker -msg-persist-dsn "mongodb://user:pass@127.0.0.1:27017/mqtt"
+./bin/broker -msg-persist-dsn "mongodb+srv://user:pass@cluster.example.com/mqtt" \
+  -msg-persist-mongodb-database mqtt
 ```
 
-PostgreSQL DDL（`created_at` 为 unix 毫秒，`message_expiry` 保留列，hook 不感知 MQTT 过期）：
+可选参数：
+
+```
+-msg-persist-table <表名>                 默认 mqtt_messages；MongoDB 下为 collection
+-msg-persist-mongodb-database <db>        MongoDB 数据库 (默认取 URI path，否则 mqtt)
+-msg-persist-batch-size <n>               每批条数, 默认 1000
+-msg-persist-flush-interval <d>           最大积压时间, 默认 5s
+-msg-persist-queue-capacity <n>           内存队列容量, 默认 10000
+-msg-persist-drop-policy drop|block       队列满策略, 默认 drop (不阻塞发布路径)
+-msg-persist-block-timeout <d>            block 策略最大等待, 默认 100ms
+-msg-persist-skip-retain                  跳过 retain 消息
+-msg-persist-node-id <id>                 落库节点 ID (默认取 -node)
+```
+
+SQL 使用多行 `INSERT ... VALUES (...),(...)` 批量写入；MongoDB 使用
+`InsertMany`（`ordered=false`）。写入失败按 at-most-once 丢弃并计入 `InsertErrors`。
+
+### MySQL DDL
+
+```sql
+CREATE TABLE mqtt_messages (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    client_id VARCHAR(256),
+    topic VARCHAR(512) NOT NULL,
+    payload LONGBLOB,
+    qos TINYINT UNSIGNED,
+    retain BOOLEAN,
+    node_id VARCHAR(50),
+    created_at BIGINT NOT NULL,   -- unix millis
+    message_expiry INT DEFAULT 0,
+    KEY idx_topic (topic),
+    KEY idx_client_time (client_id, created_at),
+    KEY idx_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+### PostgreSQL DDL
 
 ```sql
 CREATE TABLE mqtt_messages (
@@ -172,18 +210,46 @@ CREATE INDEX idx_client_time ON mqtt_messages (client_id, created_at);
 CREATE INDEX idx_created ON mqtt_messages (created_at);
 ```
 
-也可编程方式注入任意 SQL 驱动（hook 模式，见 `internal/hook/message_persister.go` 与
-`examples/hook/message_persister`）：
+### MongoDB
+
+MongoDB 无需手工建表。broker 启动时会尽力创建 `topic`、`client_id+created_at`、
+`created_at` 索引（创建失败只告警，不影响启动）。文档字段与 SQL 保持一致：
+
+```json
+{
+  "client_id": "sensor-a",
+  "topic": "sensor/a/temp",
+  "payload": "<binary>",
+  "qos": 1,
+  "retain": false,
+  "node_id": "broker-1",
+  "created_at": 1730000000000
+}
+```
+
+也可编程方式注入 SQL 驱动或 MongoDB 客户端：
 
 ```go
-h, _ := hook.NewMessagePersisterHook(db, hook.MessagePersisterConfig{BatchSize: 1000})
+// SQL
+h, _ := hook.NewMessagePersisterHook(db, hook.MessagePersisterConfig{
+    BatchSize: 1000, BatchInsert: true, PlaceholderStyle: "mysql", // or "postgres"
+})
 b.RegisterHook(h)
 defer h.Close()
+
+// MongoDB
+client, _ := mongo.Connect(ctx, options.Client().ApplyURI(uri))
+mh, _ := hook.NewMongoMessagePersisterHook(client, hook.MongoMessagePersisterConfig{
+    Database: "mqtt", Collection: "mqtt_messages", BatchSize: 1000,
+})
+b.RegisterHook(mh)
+defer func() { _ = mh.Close(); _ = client.Disconnect(ctx) }()
 ```
 
 设计要点：`OnPublish` 永远返回 nil（不拒绝/不阻塞路由），先复制 payload 再入队
-（broker 的 packet 缓冲会被复用），批量事务写入失败即丢弃并计入 `InsertErrors`
-（at-most-once），队列满时按 `drop-policy` 丢弃（默认立即丢弃，不阻塞发布路径）。
+（broker 的 packet 缓冲会被复用），后台 worker 按批次大小或刷新间隔批量写库；
+失败即丢弃并计入 `InsertErrors`（at-most-once），队列满时按 `drop-policy` 丢弃
+（默认立即丢弃，不阻塞发布路径）。
 
 ## 安全与扩展
 

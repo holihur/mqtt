@@ -2,6 +2,7 @@ package hook
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 
@@ -357,4 +358,92 @@ func expectInsertBatch(mock sqlmock.Sqlmock, n int) {
 			WillReturnResult(sqlmock.NewResult(1, 1))
 	}
 	mock.ExpectCommit()
+}
+
+// ---------------------------------------------------------------------------
+// Multi-row batch insert
+// ---------------------------------------------------------------------------
+
+func TestMessagePersisterMultiRowInsert(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+	h, err := NewMessagePersisterHook(db, MessagePersisterConfig{
+		FlushInterval: time.Hour,
+		BatchInsert:   true,
+		NodeID:        "n1",
+	})
+	if err != nil {
+		t.Fatalf("constructor failed: %v", err)
+	}
+	defer h.Close()
+	mock.ExpectExec("INSERT INTO mqtt_messages \\(client_id, topic, payload, qos, retain, node_id, created_at\\) VALUES").
+		WithArgs(
+			"c1", "a/b", []byte("m1"), byte(1), false, "n1", int64(1000),
+			"c2", "c/d", []byte("m2"), byte(0), true, "n1", int64(2000),
+		).
+		WillReturnResult(sqlmock.NewResult(1, 2))
+	h.flush([]*persistedMessage{
+		{clientID: "c1", topic: "a/b", payload: []byte("m1"), qos: 1, retain: false, createdAt: 1000},
+		{clientID: "c2", topic: "c/d", payload: []byte("m2"), qos: 0, retain: true, createdAt: 2000},
+	})
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+	if st := h.Stats(); st.Flushed != 2 || st.InsertErrors != 0 {
+		t.Fatalf("stats = %+v, want flushed=2", st)
+	}
+}
+
+func TestMessagePersisterMultiRowPostgresPlaceholders(t *testing.T) {
+	h := &MessagePersisterHook{tableName: "audit", placeholderStyle: "postgres", nodeID: "n1"}
+	query, args := h.multiRowStatement([]*persistedMessage{
+		{clientID: "c1", topic: "a", payload: []byte("1"), qos: 1, createdAt: 10},
+		{clientID: "c2", topic: "b", payload: []byte("2"), qos: 0, createdAt: 20},
+	})
+	if len(args) != 14 {
+		t.Fatalf("args = %d, want 14", len(args))
+	}
+	if !strings.Contains(query, "($1, $2, $3, $4, $5, $6, $7),($8, $9, $10, $11, $12, $13, $14)") {
+		t.Fatalf("unexpected postgres placeholders: %s", query)
+	}
+}
+
+func TestMessagePersisterMultiRowInsertError(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+	h, err := NewMessagePersisterHook(db, MessagePersisterConfig{
+		FlushInterval: time.Hour,
+		BatchInsert:   true,
+	})
+	if err != nil {
+		t.Fatalf("constructor failed: %v", err)
+	}
+	defer h.Close()
+	mock.ExpectExec("INSERT INTO mqtt_messages").WillReturnError(sql.ErrConnDone)
+	h.flush([]*persistedMessage{
+		{clientID: "c1", topic: "a", payload: []byte("1")},
+		{clientID: "c2", topic: "b", payload: []byte("2")},
+	})
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+	if st := h.Stats(); st.InsertErrors != 2 || st.Flushed != 0 {
+		t.Fatalf("stats = %+v, want insertErrors=2", st)
+	}
+}
+
+func TestMessagePersisterCustomQueryDisablesMultiRow(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+	h, err := NewMessagePersisterHook(db, MessagePersisterConfig{
+		InsertQuery: "INSERT INTO audit VALUES (?,?)",
+		BatchInsert: true,
+	})
+	if err != nil {
+		t.Fatalf("constructor failed: %v", err)
+	}
+	defer h.Close()
+	if h.batchInsert {
+		t.Fatal("custom InsertQuery must keep single-row execution")
+	}
 }

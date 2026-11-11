@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,7 +38,17 @@ type MessagePersisterConfig struct {
 	// InsertQuery overrides the default insert statement. Placeholders must
 	// match the driver dialect (? for SQLite/MySQL, $1..$n for PostgreSQL).
 	// Column order: client_id, topic, payload, qos, retain, node_id, created_at.
+	// A custom InsertQuery is always executed once per row; BatchInsert only
+	// applies to the generated default query.
 	InsertQuery string
+	// BatchInsert uses one multi-row INSERT ... VALUES (...),(...) statement per
+	// worker batch instead of one Exec per row inside a transaction. It is
+	// ignored when InsertQuery is set. Default false for backwards
+	// compatibility; the broker enables it for MySQL/SQLite/PostgreSQL.
+	BatchInsert bool
+	// PlaceholderStyle selects generated placeholders for BatchInsert:
+	// "postgres" uses $1..$n, anything else (default) uses ?.
+	PlaceholderStyle string
 	// BatchSize is the number of messages accumulated before a batch insert.
 	// Default 1000.
 	BatchSize int
@@ -108,16 +120,19 @@ type PersisterStats struct {
 //	defer h.Close()
 type MessagePersisterHook struct {
 	BaseHook
-	db            *sql.DB
-	insertQuery   string
-	batchSize     int
-	flushInterval time.Duration
-	dropPolicy    string
-	blockTimeout  time.Duration
-	batchTimeout  time.Duration
-	nodeID        string
-	topicFilters  []string
-	skipRetain    bool
+	db               *sql.DB
+	tableName        string
+	insertQuery      string
+	batchInsert      bool
+	placeholderStyle string
+	batchSize        int
+	flushInterval    time.Duration
+	dropPolicy       string
+	blockTimeout     time.Duration
+	batchTimeout     time.Duration
+	nodeID           string
+	topicFilters     []string
+	skipRetain       bool
 
 	queue  chan *persistedMessage
 	done   chan struct{}
@@ -173,22 +188,25 @@ func NewMessagePersisterHook(db *sql.DB, cfg MessagePersisterConfig) (*MessagePe
 		slog.Warn("msg persister db ping failed", "err", err)
 	}
 	h := &MessagePersisterHook{
-		db:            db,
-		insertQuery:   insertQuery,
-		batchSize:     batchSize,
-		flushInterval: flushInterval,
-		dropPolicy:    dropPolicy,
-		blockTimeout:  blockTimeout,
-		batchTimeout:  batchTimeout,
-		nodeID:        cfg.NodeID,
-		topicFilters:  cfg.TopicFilters,
-		skipRetain:    cfg.SkipRetain,
-		queue:         make(chan *persistedMessage, queueCap),
-		done:          make(chan struct{}),
+		db:               db,
+		tableName:        table,
+		insertQuery:      insertQuery,
+		batchInsert:      cfg.BatchInsert && cfg.InsertQuery == "",
+		placeholderStyle: cfg.PlaceholderStyle,
+		batchSize:        batchSize,
+		flushInterval:    flushInterval,
+		dropPolicy:       dropPolicy,
+		blockTimeout:     blockTimeout,
+		batchTimeout:     batchTimeout,
+		nodeID:           cfg.NodeID,
+		topicFilters:     cfg.TopicFilters,
+		skipRetain:       cfg.SkipRetain,
+		queue:            make(chan *persistedMessage, queueCap),
+		done:             make(chan struct{}),
 	}
 	h.wg.Add(1)
 	go h.worker()
-	slog.Info("msg persister started", "table", table, "batchSize", batchSize, "flushInterval", flushInterval, "queueCapacity", queueCap, "dropPolicy", dropPolicy)
+	slog.Info("msg persister started", "table", table, "batchSize", batchSize, "batchInsert", h.batchInsert, "flushInterval", flushInterval, "queueCapacity", queueCap, "dropPolicy", dropPolicy)
 	return h, nil
 }
 
@@ -297,10 +315,18 @@ func (h *MessagePersisterHook) worker() {
 	}
 }
 
-// flush writes one batch in a single transaction. A failed batch is dropped
-// (at-most-once delivery) and counted in InsertErrors.
+// maxRowsPerBatchInsert caps placeholders per statement. Seven columns × 1000
+// rows = 7000 bind parameters, below SQLite/PostgreSQL/MySQL defaults.
+const maxRowsPerBatchInsert = 1000
+
+// flush writes one batch. A failed batch is dropped (at-most-once delivery)
+// and counted in InsertErrors.
 func (h *MessagePersisterHook) flush(batch []*persistedMessage) {
 	if len(batch) == 0 {
+		return
+	}
+	if h.batchInsert {
+		h.flushMultiRow(batch)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), h.batchTimeout)
@@ -334,6 +360,48 @@ func (h *MessagePersisterHook) flush(batch []*persistedMessage) {
 		return
 	}
 	h.flushed.Add(int64(len(batch)))
+}
+
+// flushMultiRow writes a batch with multi-row INSERT statements. Chunks are
+// capped at maxRowsPerBatchInsert to stay under driver placeholder limits.
+func (h *MessagePersisterHook) flushMultiRow(batch []*persistedMessage) {
+	ctx, cancel := context.WithTimeout(context.Background(), h.batchTimeout)
+	defer cancel()
+	for start := 0; start < len(batch); start += maxRowsPerBatchInsert {
+		end := start + maxRowsPerBatchInsert
+		if end > len(batch) {
+			end = len(batch)
+		}
+		chunk := batch[start:end]
+		query, args := h.multiRowStatement(chunk)
+		if _, err := h.db.ExecContext(ctx, query, args...); err != nil {
+			h.insertErrors.Add(int64(len(batch) - start))
+			slog.Warn("msg persister batch insert failed", "err", err, "batch", len(chunk), "remaining", len(batch)-start)
+			return
+		}
+		h.flushed.Add(int64(len(chunk)))
+	}
+}
+
+// multiRowStatement builds "INSERT ... VALUES (...),(...)" and its args for
+// the default column order. The ? style is used for SQLite/MySQL; postgres
+// uses $1..$n.
+func (h *MessagePersisterHook) multiRowStatement(batch []*persistedMessage) (string, []any) {
+	const columns = " (client_id, topic, payload, qos, retain, node_id, created_at) VALUES "
+	args := make([]any, 0, len(batch)*7)
+	groups := make([]string, 0, len(batch))
+	postgres := strings.EqualFold(h.placeholderStyle, "postgres")
+	for _, m := range batch {
+		if postgres {
+			base := len(args)
+			groups = append(groups, fmt.Sprintf("($%d, $%d, $%d, $%d, $%d, $%d, $%d)", base+1, base+2, base+3, base+4, base+5, base+6, base+7))
+		} else {
+			groups = append(groups, "(?, ?, ?, ?, ?, ?, ?)")
+		}
+		args = append(args, m.clientID, m.topic, m.payload, m.qos, m.retain, h.nodeID, m.createdAt)
+	}
+	query := "INSERT INTO " + h.tableName + columns + strings.Join(groups, ",")
+	return query, args
 }
 
 // Close stops the worker, flushes any queued messages and returns. It is safe
