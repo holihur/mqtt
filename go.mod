@@ -7,7 +7,7 @@ require (
 	github.com/alicebob/miniredis/v2 v2.40.0
 	github.com/cockroachdb/pebble v1.1.5
 	github.com/eclipse/paho.mqtt.golang v1.5.1
-	github.com/go-sql-driver/mysql v1.10.1
+	github.com/go-sql-driver/mysql v1.10.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
